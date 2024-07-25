@@ -1,0 +1,6 @@
+pytest
+pytest-cov
+black
+bump2version
+pandas
+openpyxl
