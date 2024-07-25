@@ -4,3 +4,4 @@ black
 bump2version
 pandas
 openpyxl
+os
