@@ -5,3 +5,4 @@ bump2version
 pandas
 openpyxl
 opencv-python
+pytorch
