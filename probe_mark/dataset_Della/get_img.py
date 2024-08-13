@@ -3,7 +3,8 @@ import os
 import cv2
 import numpy as np
 import openpyxl
-import win32com.client as win32
+
+# import win32com.client as win32
 from PIL import Image, ImageChops, ImageGrab
 
 
