@@ -2,9 +2,9 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-from PIL import Image
+import PIL.Image as Image
+import torchvision.tv_tensors as tv_tensors
 from torch.utils.data import Dataset
-from torchvision.tv_tensors import Mask
 
 
 class SegmentationBinaryDataset(Dataset):
@@ -41,7 +41,7 @@ class SegmentationBinaryDataset(Dataset):
         label = Image.open(label_path).convert("L")
 
         if self.transform:
-            label = Mask(label)
+            label = tv_tensors.Mask(label)
             image, label = self.transform(image, label)
 
         return image, label
