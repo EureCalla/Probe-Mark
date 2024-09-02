@@ -1,0 +1,25 @@
+==> torch version: 2.2.0
+==> cudnn version: 8700
+==> Cmd:
+['/home/hungcheng/Project/Probe-Mark/probe_mark/train.py']
+==> Opt:
+  batch_size: 128
+  data_dir: /home/hungcheng/Project/Probe-Mark/data/processed
+  decoder_name: FPN
+  device: cuda:0
+  encoder_name: resnet18
+  encoder_weights: imagenet
+  eta_min: 1e-05
+  exp_id: default
+  gpu_id: 0
+  image_path: None
+  load_model_path: None
+  log_dir: /home/hungcheng/Project/Probe-Mark/runs/default/2024-09-03-01-13-07
+  lr: 0.0001
+  max_epochs: 10
+  num_workers: 8
+  resume: False
+  root_dir: /home/hungcheng/Project/Probe-Mark
+  seed: 42
+  snapshot_path: None
+  test: False
