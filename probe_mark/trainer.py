@@ -6,7 +6,8 @@ import torch.nn as nn
 import torch.optim as optim
 from logger import Logger
 from torch.utils.data import DataLoader
-from torchmetrics.classification import BinaryAccuracy
+from torchmetrics.classification import BinaryAveragePrecision
+from torchmetrics.segmentation import MeanIoU
 from tqdm import tqdm
 
 
@@ -35,18 +36,30 @@ class Trainer:
         self.lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=self.max_epochs, eta_min=self.eta_min
         )  # LR scheduler
-        self.train_acc_metric = BinaryAccuracy(threshold=0.5).to(
-            self.device
-        )  # Train accuracy
-        self.val_acc_metric = BinaryAccuracy(threshold=0.5).to(
-            self.device
-        )  # Validation accuracy
+        # metrics
+        self.binary_AP = BinaryAveragePrecision().to(self.device)
+        self.mIoU = MeanIoU(num_classes=1).to(self.device)
 
         self.logger = logger  # Logger instance
         # self.prof = logger.prof  # Profiler
 
         if opt.resume:
             self._load_snapshot(opt.snapshot_path)  # Load training snapshot
+
+    def metrics(self, prefix: str, epoch: int):
+        self.logger.add_scalar(
+            f"{prefix}/Binary AP",
+            self.binary_AP.compute().item(),
+            epoch,
+        )
+        self.logger.add_scalar(
+            f"{prefix}/Mean IoU",
+            self.mIoU.compute().item(),
+            epoch,
+        )
+
+        self.binary_AP.reset()
+        self.mIoU.reset()
 
     def _load_snapshot(self, path: str):
         """Load training state from snapshot."""
@@ -69,7 +82,6 @@ class Trainer:
     def train_one_epoch(self, epoch: int):
         """Train model for one epoch."""
         self.model.train()
-        self.train_acc_metric.reset()
         loss = 0.0
         pbar = tqdm(self.train_loader, desc=f"Train Epoch {epoch:2d}")
         for source, targets in pbar:
@@ -80,24 +92,24 @@ class Trainer:
             loss_batch.backward()
             self.optimizer.step()
 
-            self.train_acc_metric.update(output, targets)
+            self.binary_AP.update(output, targets)
+            output = torch.sigmoid(output)
+            self.mIoU((output > 0.5).long(), targets.long())
             loss += loss_batch.item()
             pbar.set_postfix(
                 Loss=f"{loss_batch.item():.4f}",
-                Accuracy=f"{100 * self.train_acc_metric.compute().item():.2f}%",
+                Accuracy=f"{100 * self.binary_AP.compute().item():.2f}%",
             )
 
-        train_acc = 100 * self.train_acc_metric.compute().item()
         self.logger.add_scalar("Train/Loss", loss / len(self.train_loader), epoch)
-        self.logger.add_scalar("Train/Accuracy", train_acc, epoch)
         self.logger.add_scalar(
             "Learning Rate", self.optimizer.param_groups[0]["lr"], epoch
         )
+        self.metrics("Train", epoch)
 
     def validate(self, epoch: int):
         """Validate model on validation set."""
         self.model.eval()
-        self.val_acc_metric.reset()
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f"Validate Epoch {epoch:2d}")
             for source, targets in pbar:
@@ -105,14 +117,16 @@ class Trainer:
                 output = self.model(source)
                 loss = self.criterion(output, targets.float())
 
-                self.val_acc_metric.update(output, targets)
+                self.binary_AP.update(output, targets)
+                output = torch.sigmoid(output)
+                self.mIoU((output > 0.5).long(), targets.long())
                 pbar.set_description(
-                    f"Accuracy {100 * self.val_acc_metric.compute().item():.2f}%"
+                    f"Accuracy {100 * self.binary_AP.compute().item():.2f}%"
                 )
 
-        val_acc = 100 * self.val_acc_metric.compute().item()
+        val_acc = 100 * self.binary_AP.compute().item()
         self.logger.add_scalar("Validate/Loss", loss, epoch)
-        self.logger.add_scalar("Validate/Accuracy", val_acc, epoch)
+        self.metrics("Validate", epoch)
         return val_acc
 
     def run(self):
@@ -127,10 +141,10 @@ class Trainer:
                 val_acc = self.validate(epoch)
             self._save_snapshot(epoch)
 
-            # if val_acc > best_val_acc:
-            #     best_val_acc = val_acc
-            #     torch.save(
-            #         self.model.state_dict(), os.path.join(self.log_dir, "best_model.pt")
-            #     )
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                torch.save(
+                    self.model.state_dict(), os.path.join(self.log_dir, "best_model.pt")
+                )
 
         # self.prof.stop()
