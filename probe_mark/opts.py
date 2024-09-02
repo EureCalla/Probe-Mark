@@ -61,7 +61,7 @@ class opts(object):
         self.parser.add_argument(
             "--max_epochs",
             type=int,
-            default=30,
+            default=10,
             help="max epochs to train",  # Maximum number of training epochs
         )
         self.parser.add_argument(
