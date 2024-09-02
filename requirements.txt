@@ -7,3 +7,4 @@ openpyxl
 opencv-python
 pytorch
 segmentation-models-pytorch
+torchmetrics
