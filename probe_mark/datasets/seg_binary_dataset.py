@@ -4,17 +4,30 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import PIL.Image as Image
 import torchvision.tv_tensors as tv_tensors
+from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 
 
 class SegmentationBinaryDataset(Dataset):
-    def __init__(self, root: Path, transform: Optional[Callable] = None):
+    def __init__(
+        self,
+        root: Path,
+        is_train: bool = True,
+        seed: int = 42,
+        transform: Optional[Callable] = None,
+    ):
         self.root = root
         self.transform = transform
         # TODO(hcchen): Add file mapping for different dataset
         self.file_mapping = {"image": "image.png", "label": "mask.png"}
 
         samples = self._make_dataset(directory=self.root)
+
+        # TODO(hcchen): Add stratified sampling, default to 8:2 split
+        train_samples, test_samples = train_test_split(
+            samples, test_size=0.2, random_state=seed
+        )
+        samples = train_samples if is_train else test_samples
 
         self.samples = samples
         self.targets = [s[1] for s in samples]
