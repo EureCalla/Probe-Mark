@@ -19,7 +19,7 @@ class SegmentationBinaryDataset(Dataset):
         self.root = root
         self.transform = transform
         # TODO(hcchen): Add file mapping for different dataset
-        self.file_mapping = {"image": "image.png", "label": "mask.png"}
+        self.file_mapping = {"image": "image.png", "label": "ground_truth.png"}
 
         samples = self._make_dataset(directory=self.root)
 

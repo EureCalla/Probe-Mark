@@ -65,7 +65,7 @@ class opts(object):
             help="max epochs to train",  # Maximum number of training epochs
         )
         self.parser.add_argument(
-            "--batch_size", type=int, default=128, help="batch size"  # Batch size
+            "--batch_size", type=int, default=16, help="batch size"  # Batch size
         )
         self.parser.add_argument(
             "--num_workers",
