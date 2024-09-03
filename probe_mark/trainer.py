@@ -7,7 +7,7 @@ import torch.optim as optim
 from logger import Logger
 from torch.utils.data import DataLoader
 from torchmetrics.classification import BinaryAveragePrecision
-from torchmetrics.segmentation import MeanIoU
+from torchmetrics.segmentation import GeneralizedDiceScore, MeanIoU
 from tqdm import tqdm
 
 
@@ -39,6 +39,7 @@ class Trainer:
         # metrics
         self.binary_AP = BinaryAveragePrecision().to(self.device)
         self.mIoU = MeanIoU(num_classes=1).to(self.device)
+        self.gds = GeneralizedDiceScore(num_classes=1).to(self.device)
 
         self.logger = logger  # Logger instance
         # self.prof = logger.prof  # Profiler
@@ -46,15 +47,28 @@ class Trainer:
         if opt.resume:
             self._load_snapshot(opt.snapshot_path)  # Load training snapshot
 
-    def metrics(self, prefix: str, epoch: int):
+    def metrics_update(self, output, targets):
+        """Update metrics with output and targets."""
+        self.binary_AP.update(output, targets)
+        output = torch.sigmoid(output) > 0.5
+        self.mIoU(output.long(), targets.long())
+        self.gds(output.long(), targets.long())
+
+    def metrics_compute(self, prefix: str, epoch: int):
+        """Compute metrics and log to tensorboard"""
         self.logger.add_scalar(
-            f"{prefix}/Binary AP",
+            f"{prefix}/Binary Average Precision",
             self.binary_AP.compute().item(),
             epoch,
         )
         self.logger.add_scalar(
             f"{prefix}/Mean IoU",
             self.mIoU.compute().item(),
+            epoch,
+        )
+        self.logger.add_scalar(
+            f"{prefix}/Generalized Dice Score",
+            self.gds.compute().item(),
             epoch,
         )
 
@@ -92,9 +106,7 @@ class Trainer:
             loss_batch.backward()
             self.optimizer.step()
 
-            self.binary_AP.update(output, targets)
-            output = torch.sigmoid(output)
-            self.mIoU((output > 0.5).long(), targets.long())
+            self.metrics_update(output, targets)
             loss += loss_batch.item()
             pbar.set_postfix(
                 Loss=f"{loss_batch.item():.4f}",
@@ -105,7 +117,7 @@ class Trainer:
         self.logger.add_scalar(
             "Learning Rate", self.optimizer.param_groups[0]["lr"], epoch
         )
-        self.metrics("Train", epoch)
+        self.metrics_compute("Train", epoch)
 
     def validate(self, epoch: int):
         """Validate model on validation set."""
@@ -117,16 +129,14 @@ class Trainer:
                 output = self.model(source)
                 loss = self.criterion(output, targets.float())
 
-                self.binary_AP.update(output, targets)
-                output = torch.sigmoid(output)
-                self.mIoU((output > 0.5).long(), targets.long())
+                self.metrics_update(output, targets)
                 pbar.set_description(
                     f"Accuracy {100 * self.binary_AP.compute().item():.2f}%"
                 )
 
         val_acc = 100 * self.binary_AP.compute().item()
         self.logger.add_scalar("Validate/Loss", loss, epoch)
-        self.metrics("Validate", epoch)
+        self.metrics_compute("Validate", epoch)
         return val_acc
 
     def run(self):

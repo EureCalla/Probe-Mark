@@ -1,7 +1,6 @@
 import argparse
 
 import segmentation_models_pytorch as smp
-import timm
 from datasets import (
     AUGMENTATION_TRANSFORMS,
     BASIC_TRANSFORMS,
