@@ -4,9 +4,8 @@ import cv2
 import numpy as np
 import openpyxl
 
-# import win32com.client as win32
-from PIL import Image, ImageChops, ImageGrab
 
+from PIL import Image, ImageChops, ImageGrab
 
 def create_folders(base_path, img_name_list):
     folder_paths = []
