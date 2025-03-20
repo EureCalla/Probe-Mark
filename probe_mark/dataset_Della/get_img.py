@@ -31,7 +31,7 @@ def create_folders(base_path, img_name_list):
 #             shape.Copy()
 #             image = ImageGrab.grabclipboard()
 #             if image:
-#                 # 選擇對應資料夾來儲存圖片
+#                 # 選擇對應資料夾儲存圖片
 #                 folder_index = i % len(created_folders)
 #                 folder_path = created_folders[folder_index]
 #                 image_path = os.path.join(folder_path, img_name + ".png")
