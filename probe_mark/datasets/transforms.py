@@ -3,6 +3,26 @@ import torchvision.transforms.v2 as T
 import torchvision.tv_tensors as tv_tensors
 
 
+def PREDICT_TRANSFORMS():
+    """
+    Image-only transformations for inference (no label/mask).
+    Matches the spatial and normalization pipeline of BASIC_TRANSFORMS.
+    """
+    img_size: list = [224, 224]
+    mean: list = [0.485, 0.456, 0.406]
+    std: list = [0.229, 0.224, 0.225]
+
+    return T.Compose(
+        [
+            T.ToImage(),
+            T.Pad(padding=(0, 129, 0, 129), fill=0, padding_mode="constant"),
+            T.Resize(size=img_size),
+            T.ToDtype(dtype=torch.float32, scale=True),
+            T.Normalize(mean=mean, std=std),
+        ]
+    )
+
+
 def BASIC_TRANSFORMS():
     """
     Basic image transformations: resize, convert to tensor, and normalize.
