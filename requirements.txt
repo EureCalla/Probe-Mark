@@ -5,6 +5,7 @@ bump2version
 pandas
 openpyxl
 opencv-python
+scikit-learn
 pytorch
 segmentation-models-pytorch
 torchmetrics
