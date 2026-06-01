@@ -4,8 +4,10 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from mpivr20_cms import get_clean_output_dir
+
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_BASE = os.path.join("data", "processed")
+OUTPUT_BASE = get_clean_output_dir()
 
 
 def run_background(status_var, done_message, target):
@@ -114,7 +116,7 @@ def open_clean_dialog(parent, status_var):
 
             service = LoadCleanService(
                 tasks=tasks,
-                save_dir=os.path.join(REPO_ROOT, OUTPUT_BASE),
+                save_dir=OUTPUT_BASE,
                 force=force_var.get(),
             )
             dataset_ids = service.run()

@@ -3,9 +3,11 @@ import os
 import sqlite3
 from pathlib import Path
 
+from mpivr20_cms import get_database_path
+
 
 class DBManager:
-    DB_PATH = Path(__file__).resolve().parent / "probe_mark.db"
+    DB_PATH = get_database_path()
 
     def __init__(self, db_path=None):
         self.db_path = str(db_path or self.DB_PATH)

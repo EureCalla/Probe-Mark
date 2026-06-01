@@ -9,6 +9,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from mpivr20_cms import get_clean_output_dir
+
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
@@ -21,8 +23,8 @@ def main():
     )
     parser.add_argument(
         "--save-dir",
-        default=os.path.join(REPO_ROOT, "data", "processed"),
-        help="輸出資料夾，預設 data/processed",
+        default=get_clean_output_dir(),
+        help="輸出資料夾，預設 mpivr20_cms.py 的共用資料路徑",
     )
     parser.add_argument(
         "--force",

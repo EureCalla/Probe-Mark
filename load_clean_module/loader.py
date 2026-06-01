@@ -6,9 +6,10 @@ import numpy as np
 import openpyxl
 
 from database import DBManager
+from mpivr20_cms import get_clean_output_dir
 
 RAW_DIR = "data/raw"
-PROCESSED_DIR = "data/processed"
+PROCESSED_DIR = get_clean_output_dir()
 SHEET_IMAGE = "主要"
 SHEET_LABEL = "體積面積量測"
 TARGET_COL = 2

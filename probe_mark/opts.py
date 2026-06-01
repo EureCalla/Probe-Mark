@@ -2,6 +2,8 @@ import argparse
 import os
 import time
 
+from mpivr20_cms import get_clean_output_dir
+
 
 class opts(object):
     def __init__(self):
@@ -15,7 +17,7 @@ class opts(object):
         self.parser.add_argument(
             "--data_dir",
             type=str,
-            default="data/processed",
+            default=get_clean_output_dir(),
             help="dataset directory",  # Dataset directory
         )
         self.parser.add_argument(
@@ -130,7 +132,8 @@ class opts(object):
         opt.device = f"cuda:{opt.gpu_id}" if opt.gpu_id >= 0 else "cpu"
 
         # Check if the dataset directory exists, raise error if not (skip in test mode)
-        opt.data_dir = os.path.join(opt.root_dir, opt.data_dir)
+        if not os.path.isabs(opt.data_dir):
+            opt.data_dir = os.path.join(opt.root_dir, opt.data_dir)
         if not opt.test and not os.path.exists(opt.data_dir):
             raise ValueError(f"Data directory {opt.data_dir} not found")
 
