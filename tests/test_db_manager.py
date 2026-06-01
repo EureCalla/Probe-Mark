@@ -39,6 +39,7 @@ def test_db_manager_dataset_sample_model_prediction_flow(tmp_path):
     dataset = db.get_dataset(dataset_id)
     assert dataset["n_samples"] == 2
     assert db.cache_valid(dataset)
+    assert db.get_dataset_for_excel_path(str(excel_path))["id"] == dataset_id
 
     sample_ids = [sample["id"] for sample in db.list_samples(dataset_id)]
     split_id = db.create_split(

@@ -98,7 +98,7 @@ class LoadCleanService:
 
         source_id = self.db.upsert_source_excel(excel_path, output_name)
         out_dir = os.path.abspath(os.path.join(self.save_dir, output_name))
-        existing = self.db.get_dataset_for_source(source_id, output_name)
+        existing = self.db.get_dataset_for_excel_path(excel_path)
         if not self.force and self.db.cache_valid(existing):
             return existing["id"], existing["n_samples"], True
 

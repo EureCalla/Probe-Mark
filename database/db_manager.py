@@ -151,28 +151,59 @@ class DBManager:
         path = os.path.abspath(excel_path)
         stat = os.stat(path)
         with self._connect() as conn:
-            conn.execute(
+            row = conn.execute(
+                """
+                SELECT id FROM source_excels
+                WHERE original_path = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (path,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    UPDATE source_excels
+                    SET file_name = ?,
+                        output_name = ?,
+                        file_mtime = ?,
+                        file_size = ?,
+                        status = 'active',
+                        updated_at = datetime('now','localtime')
+                    WHERE id = ?
+                    """,
+                    (os.path.basename(path), output_name, stat.st_mtime, stat.st_size, row["id"]),
+                )
+                return row["id"]
+
+            cur = conn.execute(
                 """
                 INSERT INTO source_excels
                     (file_name, original_path, output_name, file_mtime, file_size, status)
                 VALUES (?, ?, ?, ?, ?, 'active')
-                ON CONFLICT(original_path, output_name) DO UPDATE SET
-                    file_name=excluded.file_name,
-                    file_mtime=excluded.file_mtime,
-                    file_size=excluded.file_size,
-                    status='active',
-                    updated_at=datetime('now','localtime')
                 """,
                 (os.path.basename(path), path, output_name, stat.st_mtime, stat.st_size),
             )
+        return cur.lastrowid
+
+    def get_dataset_for_excel_path(self, excel_path):
+        path = os.path.abspath(excel_path)
+        with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id FROM source_excels
-                WHERE original_path = ? AND output_name = ?
+                SELECT d.*
+                FROM datasets d
+                JOIN source_excels s ON s.id = d.source_excel_id
+                WHERE s.original_path = ?
+                ORDER BY
+                    CASE WHEN d.status = 'done' THEN 0 ELSE 1 END,
+                    d.updated_at DESC,
+                    d.id DESC
+                LIMIT 1
                 """,
-                (path, output_name),
+                (path,),
             ).fetchone()
-        return row["id"]
+        return self._dict(row)
 
     def get_dataset_for_source(self, source_excel_id, dataset_name):
         with self._connect() as conn:
