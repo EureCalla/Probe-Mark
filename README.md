@@ -96,9 +96,11 @@ DB 位置：
 
 1. 使用者按「資料清洗」。
 2. 選擇 Excel，確認 `dataset_name`。
-3. `LoadCleanService` 先查 DB cache。
-4. 若相同 Excel path + output name 已清洗且 PNG 檔案仍存在，預設沿用快取。
-5. 若勾選「強制重建快取」，重新抽圖、產生 `ground_truth.png`，並更新 DB。
+3. 可在「進階清洗規則」調整 `ground_truth` 品質門檻，預設最大面積 50%、最小 30 pixels。
+4. `LoadCleanService` 先查 DB cache。
+5. 若相同 Excel path + output name 已清洗且 PNG 檔案仍存在，預設沿用快取。
+6. 若勾選「強制重建快取」，重新抽圖、產生 `ground_truth.png`，並更新 DB。
+7. `ground_truth` 面積超過最大比例或低於最小 pixels 的 sample 會標記為 `failed`，不會進入訓練。
 
 ### 模型訓練
 

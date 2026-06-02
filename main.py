@@ -90,9 +90,14 @@ def format_clean_result(result: dict) -> str:
     if failed_samples:
         lines.append(f"failed samples: {len(failed_samples)}")
         for item in failed_samples:
+            if item["reason"] == "area_too_large":
+                detail = f"ground_truth {item['ratio']:.1%}"
+            elif item["reason"] == "area_too_small":
+                detail = f"ground_truth {item['pixels']} px"
+            else:
+                detail = "ground_truth 不符合清洗規則"
             lines.append(
-                f"- {item['output_name']} / {item['sample_name']}: "
-                f"ground_truth {item['ratio']:.1%}"
+                f"- {item['output_name']} / {item['sample_name']}: {detail}"
             )
     return "\n".join(lines)
 
@@ -112,11 +117,28 @@ def open_clean_dialog(parent, status_var):
 
     task_state = []
     force_var = tk.BooleanVar(value=False)
+    max_area_percent_var = tk.StringVar(value="50")
+    min_pixels_var = tk.StringVar(value="30")
 
     top = ttk.Frame(dialog, padding=12)
     top.pack(fill=tk.X)
     ttk.Label(top, text=f"輸出根目錄：{OUTPUT_ROOT}（清洗資料：data）").pack(side=tk.LEFT)
     ttk.Checkbutton(top, text="強制重建快取", variable=force_var).pack(side=tk.RIGHT)
+
+    advanced = ttk.LabelFrame(dialog, text="進階清洗規則", padding=8)
+    advanced.pack(fill=tk.X, padx=12, pady=(0, 8))
+    ttk.Label(advanced, text="ground_truth 最大面積 (%)").grid(
+        row=0, column=0, sticky="w", padx=4
+    )
+    ttk.Entry(advanced, textvariable=max_area_percent_var, width=8).grid(
+        row=0, column=1, sticky="w", padx=4
+    )
+    ttk.Label(advanced, text="ground_truth 最小 pixels").grid(
+        row=0, column=2, sticky="w", padx=12
+    )
+    ttk.Entry(advanced, textvariable=min_pixels_var, width=8).grid(
+        row=0, column=3, sticky="w", padx=4
+    )
 
     list_box = ttk.LabelFrame(dialog, text="待處理 Excel", padding=8)
     list_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
@@ -207,6 +229,22 @@ def open_clean_dialog(parent, status_var):
         if not tasks:
             messagebox.showwarning("資料清洗", "請先選擇 Excel", parent=dialog)
             return
+        try:
+            max_ground_truth_ratio = float(max_area_percent_var.get()) / 100.0
+            min_ground_truth_pixels = int(min_pixels_var.get())
+        except ValueError:
+            messagebox.showwarning("資料清洗", "進階清洗規則必須是數字", parent=dialog)
+            return
+        if not 0 < max_ground_truth_ratio <= 1:
+            messagebox.showwarning(
+                "資料清洗", "ground_truth 最大面積需介於 1 到 100", parent=dialog
+            )
+            return
+        if min_ground_truth_pixels < 0:
+            messagebox.showwarning(
+                "資料清洗", "ground_truth 最小 pixels 不可小於 0", parent=dialog
+            )
+            return
 
         def task():
             from load_clean_module import LoadCleanService
@@ -215,6 +253,8 @@ def open_clean_dialog(parent, status_var):
                 tasks=tasks,
                 save_dir=OUTPUT_BASE,
                 force=force_var.get(),
+                max_ground_truth_ratio=max_ground_truth_ratio,
+                min_ground_truth_pixels=min_ground_truth_pixels,
             )
             result = service.run()
             return format_clean_result(result)

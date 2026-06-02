@@ -13,20 +13,23 @@ PROCESSED_DIR = get_clean_output_dir()
 SHEET_IMAGE = "主要"
 SHEET_LABEL = "體積面積量測"
 TARGET_COL = 2
-MAX_GROUND_TRUTH_RATIO = 0.5
+DEFAULT_MAX_GROUND_TRUTH_RATIO = 0.5
+DEFAULT_MIN_GROUND_TRUTH_PIXELS = 30
 
 
 class GroundTruthAreaError(ValueError):
-    """Raised when generated ground-truth masks cover too much of the image."""
+    """Raised when all generated ground-truth masks fail quality rules."""
 
     def __init__(self, excel_path: str, violations: list[dict]):
         self.excel_path = excel_path
         self.violations = violations
         details = "; ".join(
-            f"{item['sample_name']}={item['ratio']:.1%}" for item in violations
+            f"{item['sample_name']} {item['reason']} "
+            f"({item['pixels']} px, {item['ratio']:.1%})"
+            for item in violations
         )
         super().__init__(
-            f"ground_truth 面積超過 50%，不可用於訓練：{excel_path}；{details}"
+            f"ground_truth 全部不符合清洗規則，不可用於訓練：{excel_path}；{details}"
         )
 
 
@@ -71,24 +74,59 @@ def ground_truth_ratio(ground_truth: np.ndarray) -> float:
     return float(np.count_nonzero(ground_truth)) / float(ground_truth.size)
 
 
-def ground_truth_violation(sample_name: str, ground_truth: np.ndarray) -> dict | None:
-    """Return violation details when ground-truth area exceeds the allowed ratio."""
+def ground_truth_violation(
+    sample_name: str,
+    ground_truth: np.ndarray,
+    max_ratio: float = DEFAULT_MAX_GROUND_TRUTH_RATIO,
+    min_pixels: int = DEFAULT_MIN_GROUND_TRUTH_PIXELS,
+) -> dict | None:
+    """Return violation details when ground-truth area is outside quality limits."""
+    pixels = int(np.count_nonzero(ground_truth))
     ratio = ground_truth_ratio(ground_truth)
-    if ratio <= MAX_GROUND_TRUTH_RATIO:
-        return None
-    return {
-        "sample_name": sample_name,
-        "ratio": ratio,
-        "limit": MAX_GROUND_TRUTH_RATIO,
-    }
+    if ratio > max_ratio:
+        return {
+            "sample_name": sample_name,
+            "pixels": pixels,
+            "ratio": ratio,
+            "reason": "area_too_large",
+            "limit": max_ratio,
+        }
+    if pixels < min_pixels:
+        return {
+            "sample_name": sample_name,
+            "pixels": pixels,
+            "ratio": ratio,
+            "reason": "area_too_small",
+            "limit": min_pixels,
+        }
+    return None
+
+
+def violation_message(violation: dict) -> str:
+    """Format a ground-truth quality violation for logs and UI."""
+    if violation["reason"] == "area_too_large":
+        return f"ground_truth {violation['ratio']:.1%} > {violation['limit']:.0%}"
+    if violation["reason"] == "area_too_small":
+        return f"ground_truth {violation['pixels']} px < {violation['limit']} px"
+    return "ground_truth 不符合清洗規則"
 
 
 class LoadCleanService:
-    def __init__(self, tasks=None, save_dir=PROCESSED_DIR, force=False, db=None):
+    def __init__(
+        self,
+        tasks=None,
+        save_dir=PROCESSED_DIR,
+        force=False,
+        db=None,
+        max_ground_truth_ratio=DEFAULT_MAX_GROUND_TRUTH_RATIO,
+        min_ground_truth_pixels=DEFAULT_MIN_GROUND_TRUTH_PIXELS,
+    ):
         self.tasks = tasks or []
         self.save_dir = save_dir
         self.force = force
         self.db = db or DBManager()
+        self.max_ground_truth_ratio = max_ground_truth_ratio
+        self.min_ground_truth_pixels = min_ground_truth_pixels
 
     @staticmethod
     def scan_tasks(raw_dir=RAW_DIR):
@@ -144,7 +182,7 @@ class LoadCleanService:
                 )
                 print(
                     f"  sample 標記 failed：{failure['sample_name']} "
-                    f"{failure['ratio']:.1%} > {MAX_GROUND_TRUTH_RATIO:.0%}"
+                    f"{violation_message(failure)}"
                 )
 
         print(
@@ -196,7 +234,12 @@ class LoadCleanService:
             ground_truth = cv2.imread(sample["ground_truth_path"], cv2.IMREAD_UNCHANGED)
             if ground_truth is None:
                 raise FileNotFoundError(f"無法讀取 ground_truth：{sample['ground_truth_path']}")
-            violation = ground_truth_violation(sample["sample_name"], ground_truth)
+            violation = ground_truth_violation(
+                sample["sample_name"],
+                ground_truth,
+                max_ratio=self.max_ground_truth_ratio,
+                min_pixels=self.min_ground_truth_pixels,
+            )
             if violation:
                 violation["ground_truth_path"] = sample["ground_truth_path"]
                 violations.append(violation)
@@ -231,7 +274,12 @@ class LoadCleanService:
             gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
             ground_truth = cv2.threshold(gray, 1, 1, cv2.THRESH_BINARY)[1]
             mask_view = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)[1]
-            violation = ground_truth_violation(str(sample_name), ground_truth)
+            violation = ground_truth_violation(
+                str(sample_name),
+                ground_truth,
+                max_ratio=self.max_ground_truth_ratio,
+                min_pixels=self.min_ground_truth_pixels,
+            )
 
             sample_dir = os.path.join(out_dir, str(sample_name))
             os.makedirs(sample_dir, exist_ok=True)
@@ -248,8 +296,8 @@ class LoadCleanService:
                 violation["ground_truth_path"] = ground_truth_path
                 area_violations.append(violation)
                 print(
-                    f"  ground_truth 面積過大：{sample_name} "
-                    f"{violation['ratio']:.1%} > {MAX_GROUND_TRUTH_RATIO:.0%}"
+                    f"  ground_truth 不符合清洗規則：{sample_name} "
+                    f"{violation_message(violation)}"
                 )
 
             height, width = image.shape[:2]
