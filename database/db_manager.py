@@ -241,6 +241,10 @@ class DBManager:
         return row["id"]
 
     def replace_samples(self, dataset_id, samples):
+        active_count = sum(
+            1 for sample in samples if sample.get("status", "active") == "active"
+        )
+        dataset_status = "done" if active_count > 0 else "failed"
         with self._connect() as conn:
             conn.execute("DELETE FROM samples WHERE dataset_id = ?", (dataset_id,))
             conn.executemany(
@@ -250,18 +254,26 @@ class DBManager:
                      mask_view_path, width, height, status)
                 VALUES
                     (:dataset_id, :sample_name, :image_path, :ground_truth_path,
-                     :mask_view_path, :width, :height, 'active')
+                     :mask_view_path, :width, :height, :status)
                 """,
-                [dict(sample, dataset_id=dataset_id) for sample in samples],
+                [
+                    dict(
+                        sample,
+                        dataset_id=dataset_id,
+                        status=sample.get("status", "active"),
+                    )
+                    for sample in samples
+                ],
             )
             conn.execute(
                 """
                 UPDATE datasets
-                SET n_samples = ?, status = 'done', updated_at = datetime('now','localtime')
+                SET n_samples = ?, status = ?, updated_at = datetime('now','localtime')
                 WHERE id = ?
                 """,
-                (len(samples), dataset_id),
+                (active_count, dataset_status, dataset_id),
             )
+        return active_count
 
     def mark_dataset_failed(self, dataset_id):
         with self._connect() as conn:

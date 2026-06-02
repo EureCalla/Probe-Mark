@@ -8,6 +8,8 @@ from mpivr20_cms import get_clean_output_dir
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_BASE = get_clean_output_dir()
+EXCEL_EXTENSIONS = (".xlsx", ".xlsm")
+EXCEL_FILETYPES = [("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")]
 
 
 def run_background(status_var, done_message, target):
@@ -33,10 +35,57 @@ def choose_file(var, filetypes):
 def choose_files(callback):
     files = filedialog.askopenfilenames(
         initialdir=os.path.join(REPO_ROOT, "data", "raw"),
-        filetypes=[("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")],
+        filetypes=EXCEL_FILETYPES,
     )
     if files:
         callback(files)
+
+
+def default_dataset_name(_folder: str, excel_path: str) -> str:
+    """Build a dataset name from an Excel path selected through folder import."""
+    return os.path.splitext(os.path.basename(excel_path))[0]
+
+
+def scan_excel_folder(folder: str) -> list[dict[str, str]]:
+    """Collect supported Excel files directly under a selected folder."""
+    tasks = []
+    for filename in sorted(os.listdir(folder)):
+        excel_path = os.path.join(folder, filename)
+        if not os.path.isfile(excel_path):
+            continue
+        if filename.startswith("~$"):
+            continue
+        if not filename.lower().endswith(EXCEL_EXTENSIONS):
+            continue
+        tasks.append(
+            {
+                "excel": excel_path,
+                "name": default_dataset_name(folder, excel_path),
+                "display": filename,
+            }
+        )
+    return tasks
+
+
+def choose_excel_folder(callback) -> None:
+    """Prompt for a folder and send scanned Excel tasks to the callback."""
+    folder = filedialog.askdirectory(initialdir=os.path.join(REPO_ROOT, "data", "raw"))
+    if folder:
+        callback(scan_excel_folder(folder))
+
+
+def format_clean_result(result: dict) -> str:
+    """Build the final clean dialog message, including skipped Excel files."""
+    lines = [
+        f"成功 dataset ids: {result['dataset_ids']}",
+        f"成功樣本數: {result['total_samples']}",
+    ]
+    failed = result.get("failed", [])
+    if failed:
+        lines.append(f"略過檔案: {len(failed)}")
+        for item in failed:
+            lines.append(f"- {item['excel']}: {item['error']}")
+    return "\n".join(lines)
 
 
 def choose_dir(var):
@@ -62,8 +111,25 @@ def open_clean_dialog(parent, status_var):
 
     list_box = ttk.LabelFrame(dialog, text="待處理 Excel", padding=8)
     list_box.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
-    rows = ttk.Frame(list_box)
-    rows.pack(fill=tk.BOTH, expand=True)
+    rows_canvas = tk.Canvas(list_box, highlightthickness=0)
+    rows_scrollbar = ttk.Scrollbar(list_box, orient=tk.VERTICAL, command=rows_canvas.yview)
+    rows_canvas.configure(yscrollcommand=rows_scrollbar.set)
+    rows_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    rows_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    rows = ttk.Frame(rows_canvas)
+    rows_window = rows_canvas.create_window((0, 0), window=rows, anchor="nw")
+
+    def update_scroll_region(_event: tk.Event | None = None) -> None:
+        """Keep the Excel task list scroll range aligned with rendered rows."""
+        rows_canvas.configure(scrollregion=rows_canvas.bbox("all"))
+
+    def fit_rows_width(event: tk.Event) -> None:
+        """Stretch the row frame to match the visible canvas width."""
+        rows_canvas.itemconfigure(rows_window, width=event.width)
+
+    rows.bind("<Configure>", update_scroll_region)
+    rows_canvas.bind("<Configure>", fit_rows_width)
 
     def render():
         for child in rows.winfo_children():
@@ -74,21 +140,43 @@ def open_clean_dialog(parent, status_var):
         ttk.Label(rows, text="Excel").grid(row=0, column=0, sticky="w", padx=4)
         ttk.Label(rows, text="dataset_name").grid(row=0, column=1, sticky="w", padx=4)
         for idx, item in enumerate(task_state, start=1):
-            ttk.Label(rows, text=os.path.basename(item["excel"])).grid(
+            ttk.Label(rows, text=item.get("display") or os.path.basename(item["excel"])).grid(
                 row=idx, column=0, sticky="w", padx=4, pady=2
             )
             ttk.Entry(rows, textvariable=item["name_var"], width=34).grid(
                 row=idx, column=1, sticky="w", padx=4, pady=2
             )
 
-    def add_files(files):
+    def add_task(excel: str, name: str, display: str | None = None) -> bool:
+        """Add one Excel task to the dialog state if it is not already listed."""
         existing = {item["excel"] for item in task_state}
+        if excel in existing:
+            return False
+        task_state.append(
+            {
+                "excel": excel,
+                "name_var": tk.StringVar(value=name),
+                "display": display,
+            }
+        )
+        return True
+
+    def add_files(files: tuple[str, ...]) -> None:
+        """Add Excel files selected one by one."""
+        added = False
         for path in files:
-            if path in existing:
-                continue
             base = os.path.splitext(os.path.basename(path))[0]
-            task_state.append({"excel": path, "name_var": tk.StringVar(value=base)})
-        render()
+            added = add_task(path, base) or added
+        if added:
+            render()
+
+    def add_folder_tasks(tasks: list[dict[str, str]]) -> None:
+        """Add every Excel task discovered from a selected folder."""
+        added = False
+        for task in tasks:
+            added = add_task(task["excel"], task["name"], task["display"]) or added
+        if added:
+            render()
 
     def clear():
         task_state.clear()
@@ -119,8 +207,8 @@ def open_clean_dialog(parent, status_var):
                 save_dir=OUTPUT_BASE,
                 force=force_var.get(),
             )
-            dataset_ids = service.run()
-            return f"完成 dataset ids: {dataset_ids}"
+            result = service.run()
+            return format_clean_result(result)
 
         run_background(status_var, "資料清洗完成", task)
         dialog.destroy()
@@ -130,6 +218,9 @@ def open_clean_dialog(parent, status_var):
     ttk.Button(actions, text="選擇 Excel", command=lambda: choose_files(add_files)).pack(
         side=tk.LEFT
     )
+    ttk.Button(
+        actions, text="選擇資料夾", command=lambda: choose_excel_folder(add_folder_tasks)
+    ).pack(side=tk.LEFT, padx=6)
     ttk.Button(actions, text="清空", command=clear).pack(side=tk.LEFT, padx=6)
     ttk.Button(actions, text="開始清洗", command=execute).pack(side=tk.RIGHT)
     ttk.Button(actions, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=6)

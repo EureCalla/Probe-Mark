@@ -13,6 +13,21 @@ PROCESSED_DIR = get_clean_output_dir()
 SHEET_IMAGE = "主要"
 SHEET_LABEL = "體積面積量測"
 TARGET_COL = 2
+MAX_GROUND_TRUTH_RATIO = 0.5
+
+
+class GroundTruthAreaError(ValueError):
+    """Raised when generated ground-truth masks cover too much of the image."""
+
+    def __init__(self, excel_path: str, violations: list[dict]):
+        self.excel_path = excel_path
+        self.violations = violations
+        details = "; ".join(
+            f"{item['sample_name']}={item['ratio']:.1%}" for item in violations
+        )
+        super().__init__(
+            f"ground_truth 面積超過 50%，不可用於訓練：{excel_path}；{details}"
+        )
 
 
 def imwrite_unicode(path: str, img: np.ndarray):
@@ -49,6 +64,25 @@ def extract_from_sheet(sheet, key: str, data: dict):
         data.setdefault(str(name), {})[key] = decode_image(img._data())
 
 
+def ground_truth_ratio(ground_truth: np.ndarray) -> float:
+    """Return the non-zero mask ratio of a generated ground-truth image."""
+    if ground_truth.size == 0:
+        return 0.0
+    return float(np.count_nonzero(ground_truth)) / float(ground_truth.size)
+
+
+def ground_truth_violation(sample_name: str, ground_truth: np.ndarray) -> dict | None:
+    """Return violation details when ground-truth area exceeds the allowed ratio."""
+    ratio = ground_truth_ratio(ground_truth)
+    if ratio <= MAX_GROUND_TRUTH_RATIO:
+        return None
+    return {
+        "sample_name": sample_name,
+        "ratio": ratio,
+        "limit": MAX_GROUND_TRUTH_RATIO,
+    }
+
+
 class LoadCleanService:
     def __init__(self, tasks=None, save_dir=PROCESSED_DIR, force=False, db=None):
         self.tasks = tasks or []
@@ -76,21 +110,54 @@ class LoadCleanService:
             self.tasks = self.scan_tasks()
         if not self.tasks:
             print("沒有可處理的 Excel 任務")
-            return []
+            return {"dataset_ids": [], "total_samples": 0, "failed": [], "failed_samples": []}
 
         dataset_ids = []
         total_samples = 0
+        failed = []
+        failed_samples = []
         for task in self.tasks:
             excel_path = task["excel"]
             output_name = task["output_name"]
-            dataset_id, n_samples, reused = self.process_task(excel_path, output_name)
+            try:
+                dataset_id, n_samples, reused, sample_failures = self.process_task(
+                    excel_path, output_name
+                )
+            except Exception as exc:
+                failed.append(
+                    {
+                        "excel": excel_path,
+                        "output_name": output_name,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                print(f"[{output_name}] 清洗失敗，已略過：{excel_path}")
+                print(f"  {type(exc).__name__}: {exc}")
+                continue
             dataset_ids.append(dataset_id)
             total_samples += n_samples
             action = "沿用快取" if reused else "完成清洗"
             print(f"[{output_name}] {action}：{n_samples} samples, dataset_id={dataset_id}")
+            for failure in sample_failures:
+                failed_samples.append(
+                    dict(failure, excel=excel_path, output_name=output_name)
+                )
+                print(
+                    f"  sample 標記 failed：{failure['sample_name']} "
+                    f"{failure['ratio']:.1%} > {MAX_GROUND_TRUTH_RATIO:.0%}"
+                )
 
-        print(f"全部完成：{len(dataset_ids)} dataset，{total_samples} samples")
-        return dataset_ids
+        print(
+            f"全部完成：成功 {len(dataset_ids)} dataset，"
+            f"{total_samples} samples，略過 {len(failed)} 檔，"
+            f"failed samples {len(failed_samples)} 筆"
+        )
+        return {
+            "dataset_ids": dataset_ids,
+            "total_samples": total_samples,
+            "failed": failed,
+            "failed_samples": failed_samples,
+        }
 
     def process_task(self, excel_path: str, output_name: str):
         if not os.path.isfile(excel_path):
@@ -100,7 +167,11 @@ class LoadCleanService:
         out_dir = os.path.abspath(os.path.join(self.save_dir, output_name))
         existing = self.db.get_dataset_for_excel_path(excel_path)
         if not self.force and self.db.cache_valid(existing):
-            return existing["id"], existing["n_samples"], True
+            violations = self.validate_cached_ground_truth(existing)
+            if violations:
+                self.db.mark_dataset_failed(existing["id"])
+                raise GroundTruthAreaError(excel_path, violations)
+            return existing["id"], existing["n_samples"], True, []
 
         dataset_id = self.db.upsert_dataset(
             dataset_name=output_name,
@@ -109,12 +180,27 @@ class LoadCleanService:
             status="running",
         )
         try:
-            samples = self._process_excel(excel_path, out_dir)
-            self.db.replace_samples(dataset_id, samples)
+            samples, area_violations = self._process_excel(excel_path, out_dir)
+            active_count = self.db.replace_samples(dataset_id, samples)
+            if active_count <= 0 and area_violations:
+                raise GroundTruthAreaError(excel_path, area_violations)
         except Exception:
             self.db.mark_dataset_failed(dataset_id)
             raise
-        return dataset_id, len(samples), False
+        return dataset_id, active_count, False, area_violations
+
+    def validate_cached_ground_truth(self, dataset: dict) -> list[dict]:
+        """Check cached ground-truth files before reusing a done dataset."""
+        violations = []
+        for sample in self.db.list_samples(dataset["id"]):
+            ground_truth = cv2.imread(sample["ground_truth_path"], cv2.IMREAD_UNCHANGED)
+            if ground_truth is None:
+                raise FileNotFoundError(f"無法讀取 ground_truth：{sample['ground_truth_path']}")
+            violation = ground_truth_violation(sample["sample_name"], ground_truth)
+            if violation:
+                violation["ground_truth_path"] = sample["ground_truth_path"]
+                violations.append(violation)
+        return violations
 
     def _process_excel(self, excel_path: str, out_dir: str):
         print(f"載入 {excel_path}")
@@ -128,6 +214,7 @@ class LoadCleanService:
         extract_from_sheet(wb[SHEET_LABEL], "label", data)
 
         samples = []
+        area_violations = []
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         for sample_name, items in sorted(data.items()):
             if "image" not in items or "label" not in items:
@@ -144,6 +231,7 @@ class LoadCleanService:
             gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
             ground_truth = cv2.threshold(gray, 1, 1, cv2.THRESH_BINARY)[1]
             mask_view = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)[1]
+            violation = ground_truth_violation(str(sample_name), ground_truth)
 
             sample_dir = os.path.join(out_dir, str(sample_name))
             os.makedirs(sample_dir, exist_ok=True)
@@ -156,6 +244,13 @@ class LoadCleanService:
             imwrite_unicode(label_path, label)
             imwrite_unicode(ground_truth_path, ground_truth)
             imwrite_unicode(mask_view_path, mask_view)
+            if violation:
+                violation["ground_truth_path"] = ground_truth_path
+                area_violations.append(violation)
+                print(
+                    f"  ground_truth 面積過大：{sample_name} "
+                    f"{violation['ratio']:.1%} > {MAX_GROUND_TRUTH_RATIO:.0%}"
+                )
 
             height, width = image.shape[:2]
             samples.append(
@@ -166,9 +261,10 @@ class LoadCleanService:
                     "mask_view_path": mask_view_path,
                     "width": int(width),
                     "height": int(height),
+                    "status": "failed" if violation else "active",
                 }
             )
 
         if not samples:
             raise ValueError("沒有完整樣本可輸出")
-        return samples
+        return samples, area_violations
