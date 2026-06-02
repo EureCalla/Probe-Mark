@@ -19,21 +19,24 @@ EXCEL_FILETYPES = [("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")]
 logger = logging.getLogger("probe_mark.gui")
 
 
-def run_background(status_var, done_message, target, show_done_popup=True):
+def run_background(status_var, task_name, target, show_done_popup=True):
+    done_label = f"{task_name}完成"
+    fail_label = f"{task_name}失敗"
+
     def worker():
         try:
             status_var.set("執行中...")
-            logger.info("%s 開始…", done_message)
+            logger.info("%s 開始…", task_name)
             result = target()
-            status_var.set(done_message)
-            text = str(result) if result is not None else done_message
-            logger.info("%s：%s", done_message, text)
+            status_var.set(done_label)
+            text = str(result) if result is not None else done_label
+            logger.info("%s：%s", done_label, text)
             if show_done_popup:
-                messagebox.showinfo(done_message, text)
+                messagebox.showinfo(done_label, text)
         except Exception as exc:
-            status_var.set("執行失敗")
-            logger.exception("%s 失敗：%s: %s", done_message, type(exc).__name__, exc)
-            messagebox.showerror("執行失敗", f"{type(exc).__name__}: {exc}")
+            status_var.set(fail_label)
+            logger.exception("%s：%s: %s", fail_label, type(exc).__name__, exc)
+            messagebox.showerror(fail_label, f"{type(exc).__name__}: {exc}")
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -265,7 +268,7 @@ def open_clean_dialog(parent, status_var):
             result = service.run()
             return format_clean_result(result)
 
-        run_background(status_var, "資料清洗完成", task, show_done_popup=False)
+        run_background(status_var, "資料清洗", task, show_done_popup=False)
         dialog.destroy()
 
     actions = ttk.Frame(dialog, padding=12)
@@ -580,7 +583,7 @@ def open_train_dialog(parent, status_var):
                 model_output_root=model_output_root,
             ).run()
 
-        run_background(status_var, "模型訓練完成", task)
+        run_background(status_var, "模型訓練", task)
         dialog.destroy()
 
     actions = ttk.Frame(dialog, padding=12)
@@ -648,7 +651,7 @@ def open_predict_dialog(parent, status_var):
             ).run()
             return f"輸出位置：{result['output_dir']}"
 
-        run_background(status_var, "模型預測完成", task)
+        run_background(status_var, "模型預測", task)
         dialog.destroy()
 
     actions = ttk.Frame(dialog, padding=12)

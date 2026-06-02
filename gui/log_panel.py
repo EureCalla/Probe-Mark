@@ -50,18 +50,22 @@ class LogPanel(ttk.Frame):
             self.text.tag_config(color, foreground=color)
         self.text.tag_config("ts", foreground="#7a7a7a")
 
-    def append(self, level: str, message: str) -> None:
+    def append(self, level: str, message: str, replace_last: bool = False) -> None:
         """Thread-safe: schedule the write on the Tk main loop."""
         try:
-            self.after(0, self._write, level, message)
+            self.after(0, self._write, level, message, replace_last)
         except RuntimeError:
             # Tk root already torn down; fall back to stderr-original.
             pass
 
-    def _write(self, level: str, message: str) -> None:
+    def _write(self, level: str, message: str, replace_last: bool = False) -> None:
         label, color = _LEVEL_TAGS.get(level.upper(), ("INFO", "#1e6fba"))
         ts = _dt.datetime.now().strftime("%H:%M:%S")
         self.text.configure(state=tk.NORMAL)
+        if replace_last:
+            last_line = int(self.text.index("end-1c").split(".")[0])
+            if last_line > 1:
+                self.text.delete(f"{last_line - 1}.0", f"{last_line}.0")
         self.text.insert(tk.END, f"{ts}  ", ("ts",))
         self.text.insert(tk.END, f"[{label:<5}] ", (color,))
         self.text.insert(tk.END, f"{message}\n")
@@ -105,7 +109,8 @@ class TkLogHandler(logging.Handler):
             msg = self.format(record)
         except Exception:
             msg = record.getMessage()
-        self.panel.append(record.levelname, msg)
+        replace_last = bool(getattr(record, "replace_last", False))
+        self.panel.append(record.levelname, msg, replace_last=replace_last)
 
 
 class StreamToLogger:
@@ -123,11 +128,21 @@ class StreamToLogger:
             except Exception:
                 data = str(data)
         self._buf += data
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            line = line.rstrip()
-            if line:
-                self.logger.log(self.level, line)
+        while True:
+            nl = self._buf.find("\n")
+            cr = self._buf.find("\r")
+            if nl == -1 and cr == -1:
+                break
+            if nl != -1 and (cr == -1 or nl < cr):
+                line, self._buf = self._buf[:nl], self._buf[nl + 1 :]
+                line = line.rstrip("\r")
+                if line:
+                    self.logger.log(self.level, line)
+            else:
+                line, self._buf = self._buf[:cr], self._buf[cr + 1 :]
+                if line:
+                    # carriage return without newline = progress refresh
+                    self.logger.log(self.level, line, extra={"replace_last": True})
         return len(data)
 
     def flush(self) -> None:
@@ -163,6 +178,6 @@ def install_log_panel(
         panel._orig_stdout = sys.stdout
         panel._orig_stderr = sys.stderr
         sys.stdout = StreamToLogger(logging.getLogger(f"{logger_name}.stdout"), logging.INFO)
-        sys.stderr = StreamToLogger(logging.getLogger(f"{logger_name}.stderr"), logging.ERROR)
+        sys.stderr = StreamToLogger(logging.getLogger(f"{logger_name}.stderr"), logging.INFO)
 
     return panel
