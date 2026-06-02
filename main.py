@@ -276,11 +276,17 @@ def dataset_options():
     datasets = db.list_datasets(only_done=True)
     labels = []
     mapping = {}
+    counts = {}
     for dataset in datasets:
-        label = f"#{dataset['id']} {dataset['dataset_name']} ({dataset['n_samples']} samples)"
+        sample_counts = db.count_samples_by_status(dataset["id"])
+        label = (
+            f"#{dataset['id']} {dataset['dataset_name']} "
+            f"({sample_counts['active']} valid / {sample_counts['failed']} invalid)"
+        )
         labels.append(label)
         mapping[label] = dataset["id"]
-    return labels, mapping
+        counts[dataset["id"]] = sample_counts
+    return labels, mapping, counts
 
 
 def model_options():
@@ -308,12 +314,13 @@ def open_train_dialog(parent, status_var):
     dialog.transient(parent)
     dialog.grab_set()
 
-    labels, mapping = dataset_options()
-    dataset_var = tk.StringVar(value=labels[0] if labels else "")
+    labels, mapping, sample_counts = dataset_options()
+    sample_summary_var = tk.StringVar(
+        value="Train 有效: 0，Train 無效: 0；Test 有效: 0，Test 無效: 0\n驗證比例: 0.0%"
+    )
     field_defs = [
         ("run_name", "Run 名稱", "probe_mark", "本次訓練的名稱；會影響 runs/ 底下的輸出資料夾。"),
         ("split_name", "Split 名稱", "default", "資料切分名稱；相同 dataset + split 名稱會覆寫舊切分。"),
-        ("val_ratio", "驗證比例", "0.2", "從 dataset 中切出多少比例做 validation；0.2 表示 80% train / 20% val。"),
         ("encoder_name", "Encoder", "resnet18", "特徵抽取 backbone，例如 resnet18、resnet50；需為 segmentation_models_pytorch 支援名稱。"),
         ("encoder_weights", "Encoder 權重", "imagenet", "Encoder 預訓練權重；常用 imagenet，留空表示不載入預訓練權重。"),
         ("decoder_name", "Decoder", "FPN", "分割模型架構，例如 FPN、Unet、DeepLabV3Plus。"),
@@ -329,25 +336,71 @@ def open_train_dialog(parent, status_var):
     body = ttk.Frame(dialog, padding=12)
     body.pack(fill=tk.BOTH, expand=True)
     body.columnconfigure(2, weight=1)
-    ttk.Label(body, text="Dataset").grid(row=0, column=0, sticky="e", pady=4, padx=4)
-    combo = ttk.Combobox(body, textvariable=dataset_var, values=labels, state="readonly", width=44)
-    combo.grid(row=0, column=2, sticky="w", pady=4, padx=4)
+    all_dataset_ids = [mapping[label] for label in labels]
+
+    ttk.Label(body, text="Test Dataset").grid(row=0, column=0, sticky="ne", pady=4, padx=4)
+    dataset_frame = ttk.Frame(body)
+    dataset_frame.grid(row=0, column=2, sticky="nsew", pady=4, padx=4)
+    dataset_list = tk.Listbox(
+        dataset_frame,
+        selectmode=tk.EXTENDED,
+        height=6,
+        exportselection=False,
+    )
+    dataset_scrollbar = ttk.Scrollbar(
+        dataset_frame, orient=tk.VERTICAL, command=dataset_list.yview
+    )
+    dataset_list.configure(yscrollcommand=dataset_scrollbar.set)
+    dataset_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    dataset_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    for label in labels:
+        dataset_list.insert(tk.END, label)
+    ttk.Label(body, textvariable=sample_summary_var, foreground="#1e6fba").grid(
+        row=1, column=2, sticky="w", padx=4, pady=(0, 6)
+    )
+
+    def selected_test_dataset_ids() -> list[int]:
+        """Return dataset ids selected as test datasets."""
+        return [mapping[dataset_list.get(index)] for index in dataset_list.curselection()]
+
+    def selected_train_dataset_ids() -> list[int]:
+        """Return dataset ids not selected as test datasets."""
+        test_ids = set(selected_test_dataset_ids())
+        return [dataset_id for dataset_id in all_dataset_ids if dataset_id not in test_ids]
+
+    def update_sample_summary(_event: tk.Event | None = None) -> None:
+        """Refresh sample counts for train and test dataset groups."""
+        train_ids = selected_train_dataset_ids()
+        test_ids = selected_test_dataset_ids()
+        train_valid = sum(sample_counts[dataset_id]["active"] for dataset_id in train_ids)
+        train_invalid = sum(sample_counts[dataset_id]["failed"] for dataset_id in train_ids)
+        test_valid = sum(sample_counts[dataset_id]["active"] for dataset_id in test_ids)
+        test_invalid = sum(sample_counts[dataset_id]["failed"] for dataset_id in test_ids)
+        total_valid = train_valid + test_valid
+        validation_ratio = test_valid / total_valid if total_valid else 0.0
+        sample_summary_var.set(
+            f"Train 有效: {train_valid}，Train 無效: {train_invalid}；"
+            f"Test 有效: {test_valid}，Test 無效: {test_invalid}\n"
+            f"驗證比例: {validation_ratio:.1%}"
+        )
+
+    dataset_list.bind("<<ListboxSelect>>", update_sample_summary)
     ttk.Button(
         body,
         text="?",
         width=3,
         command=lambda: messagebox.showinfo(
             "Dataset",
-            "選擇已完成資料清洗並登記在 DB 的 dataset。",
+            "選取作為 test 的 dataset；未選取的 dataset 會作為 train。",
             parent=dialog,
         ),
     ).grid(row=0, column=1, sticky="w", pady=4, padx=4)
-    if not labels:
-        ttk.Label(body, text="尚無 dataset，請先執行資料清洗").grid(
-            row=1, column=2, sticky="w", pady=4
-        )
+    if labels:
+        update_sample_summary()
+    else:
+        sample_summary_var.set("尚無 dataset，請先執行資料清洗")
 
-    for row, (key, label, _default, help_text) in enumerate(field_defs, start=1):
+    for row, (key, label, _default, help_text) in enumerate(field_defs, start=2):
         ttk.Label(body, text=label).grid(row=row, column=0, sticky="e", pady=3, padx=4)
         ttk.Entry(body, textvariable=fields[key], width=32).grid(
             row=row, column=2, sticky="w", pady=3
@@ -364,19 +417,23 @@ def open_train_dialog(parent, status_var):
         ).grid(row=row, column=1, sticky="w", pady=3, padx=4)
 
     def execute():
-        dataset_id = mapping.get(dataset_var.get())
-        if dataset_id is None:
-            messagebox.showwarning("模型訓練", "請先選擇 dataset", parent=dialog)
+        train_dataset_ids = selected_train_dataset_ids()
+        test_dataset_ids = selected_test_dataset_ids()
+        if not test_dataset_ids:
+            messagebox.showwarning("模型訓練", "請先選擇至少一個 test dataset", parent=dialog)
+            return
+        if not train_dataset_ids:
+            messagebox.showwarning("模型訓練", "至少需要保留一個 train dataset", parent=dialog)
             return
 
         def task():
             from train_module import Trainer
 
             return Trainer(
-                dataset_id=dataset_id,
+                dataset_ids=train_dataset_ids,
+                test_dataset_ids=test_dataset_ids,
                 split_name=fields["split_name"].get().strip() or "default",
                 run_name=fields["run_name"].get().strip() or None,
-                val_ratio=float(fields["val_ratio"].get()),
                 encoder_name=fields["encoder_name"].get().strip(),
                 encoder_weights=fields["encoder_weights"].get().strip() or None,
                 decoder_name=fields["decoder_name"].get().strip(),

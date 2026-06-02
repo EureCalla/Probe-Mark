@@ -28,7 +28,9 @@ from utils import seed_everything
 class Trainer:
     def __init__(
         self,
-        dataset_id,
+        dataset_id=None,
+        dataset_ids=None,
+        test_dataset_ids=None,
         split_id=None,
         split_name="default",
         run_name=None,
@@ -45,10 +47,19 @@ class Trainer:
         gpu_id=0,
         db=None,
     ):
-        self.dataset_id = int(dataset_id)
+        if dataset_ids is None:
+            dataset_ids = [dataset_id]
+        self.train_dataset_ids = [int(item) for item in dataset_ids if item is not None]
+        self.test_dataset_ids = [
+            int(item) for item in (test_dataset_ids or []) if item is not None
+        ]
+        self.dataset_ids = self.train_dataset_ids + self.test_dataset_ids
+        if not self.dataset_ids:
+            raise ValueError("至少需要選擇一個 dataset")
+        self.dataset_id = self.train_dataset_ids[0] if self.train_dataset_ids else self.dataset_ids[0]
         self.split_id = int(split_id) if split_id else None
         self.split_name = split_name
-        self.run_name = run_name or f"dataset_{dataset_id}"
+        self.run_name = run_name or self.default_run_name()
         self.seed = int(seed)
         self.val_ratio = float(val_ratio)
         self.encoder_name = encoder_name
@@ -66,16 +77,27 @@ class Trainer:
         if self.split_id:
             return self.split_id
 
-        samples = self.db.list_samples(self.dataset_id)
-        if len(samples) < 2:
-            raise ValueError("至少需要 2 個 sample 才能建立 train/val split")
+        if self.test_dataset_ids:
+            train_samples = self.list_samples_for_datasets(self.train_dataset_ids)
+            val_samples = self.list_samples_for_datasets(self.test_dataset_ids)
+            if not train_samples:
+                raise ValueError("train datasets 至少需要 1 個有效 sample")
+            if not val_samples:
+                raise ValueError("test datasets 至少需要 1 個有效 sample")
+        else:
+            samples = self.list_samples_for_datasets(self.train_dataset_ids)
+            if len(samples) < 2:
+                raise ValueError("至少需要 2 個 sample 才能建立 train/val split")
 
-        train_samples, val_samples = train_test_split(
-            samples,
-            test_size=self.val_ratio,
-            random_state=self.seed,
-            shuffle=True,
-        )
+            train_samples, val_samples = train_test_split(
+                samples,
+                test_size=self.val_ratio,
+                random_state=self.seed,
+                shuffle=True,
+            )
+        total_samples = len(train_samples) + len(val_samples)
+        train_ratio = len(train_samples) / total_samples
+        val_ratio = len(val_samples) / total_samples
         train_ids = [s["id"] for s in train_samples]
         val_ids = [s["id"] for s in val_samples]
         return self.db.create_split(
@@ -84,10 +106,23 @@ class Trainer:
             train_ids=train_ids,
             val_ids=val_ids,
             seed=self.seed,
-            train_ratio=1.0 - self.val_ratio,
-            val_ratio=self.val_ratio,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
             test_ratio=0.0,
         )
+
+    def default_run_name(self):
+        if self.test_dataset_ids:
+            return f"train_{len(self.train_dataset_ids)}_test_{len(self.test_dataset_ids)}"
+        if len(self.train_dataset_ids) == 1:
+            return f"dataset_{self.dataset_id}"
+        return f"datasets_{len(self.train_dataset_ids)}"
+
+    def list_samples_for_datasets(self, dataset_ids):
+        samples = []
+        for dataset_id in dataset_ids:
+            samples.extend(self.db.list_samples(dataset_id))
+        return samples
 
     def _make_opt(self, run_id):
         timestamp = time.strftime("%Y-%m-%d-%H-%M-%S")
@@ -120,9 +155,10 @@ class Trainer:
 
     def run(self):
         self.db.init_db()
-        dataset = self.db.get_dataset(self.dataset_id)
-        if dataset is None or dataset["status"] != "done":
-            raise ValueError(f"找不到可訓練 dataset：id={self.dataset_id}")
+        for dataset_id in self.dataset_ids:
+            dataset = self.db.get_dataset(dataset_id)
+            if dataset is None or dataset["status"] != "done":
+                raise ValueError(f"找不到可訓練 dataset：id={dataset_id}")
 
         split_id = self._ensure_split()
         train_samples = self.db.get_split_samples(split_id, "train")

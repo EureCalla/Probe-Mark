@@ -318,6 +318,22 @@ class DBManager:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def count_samples_by_status(self, dataset_id):
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM samples
+                WHERE dataset_id = ?
+                GROUP BY status
+                """,
+                (dataset_id,),
+            ).fetchall()
+        counts = {"active": 0, "failed": 0}
+        for row in rows:
+            counts[row["status"]] = row["count"]
+        return counts
+
     def cache_valid(self, dataset):
         if not dataset or dataset["status"] != "done" or dataset["n_samples"] <= 0:
             return False
