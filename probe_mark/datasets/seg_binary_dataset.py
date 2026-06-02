@@ -58,3 +58,24 @@ class SegmentationBinaryDataset(Dataset):
             image, label = self.transform(image, label)
 
         return image, label
+
+
+class SampleListSegmentationDataset(Dataset):
+    def __init__(self, samples, transform: Optional[Callable] = None):
+        self.samples = list(samples)
+        self.transform = transform
+        self.targets = [s["ground_truth_path"] for s in self.samples]
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> Tuple[Any, Any]:
+        sample = self.samples[index]
+        image = Image.open(sample["image_path"]).convert("RGB")
+        label = Image.open(sample["ground_truth_path"]).convert("L")
+
+        if self.transform:
+            label = tv_tensors.Mask(label)
+            image, label = self.transform(image, label)
+
+        return image, label

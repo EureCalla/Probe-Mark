@@ -166,3 +166,5 @@ data/processed/**
 # Ignore all model files
 runs/**/*.pt
 runs/**/*.pth
+database/*.db
+database/*.db-journal

@@ -1,10 +1,25 @@
+# --- Deep learning ---
+# torch 建議依 GPU/CUDA 版本至 https://pytorch.org/get-started/locally/
+# 取得對應指令安裝，例如：
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch
+torchmetrics
+segmentation-models-pytorch
+tensorboard
+
+# --- Image / array ---
+numpy
+opencv-python
+Pillow
+matplotlib
+
+# --- Data IO / ML utilities ---
+openpyxl
+scikit-learn
+tqdm
+
+# --- Dev / Tooling ---
 pytest
 pytest-cov
 black
 bump2version
-pandas
-openpyxl
-opencv-python
-pytorch
-segmentation-models-pytorch
-torchmetrics

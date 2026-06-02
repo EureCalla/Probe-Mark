@@ -2,6 +2,8 @@ import argparse
 import os
 import time
 
+from mpivr20_cms import get_clean_output_dir
+
 
 class opts(object):
     def __init__(self):
@@ -15,7 +17,7 @@ class opts(object):
         self.parser.add_argument(
             "--data_dir",
             type=str,
-            default="data/processed",
+            default=get_clean_output_dir(),
             help="dataset directory",  # Dataset directory
         )
         self.parser.add_argument(
@@ -110,6 +112,12 @@ class opts(object):
             default=None,
             help="path to image for testing",  # Path to the image for testing
         )
+        self.parser.add_argument(
+            "--output_dir",
+            type=str,
+            default=None,
+            help="directory to save prediction outputs (mask PNG and compare PNG)",
+        )
 
     def parse(self, args=""):
         # Parse command-line arguments
@@ -123,9 +131,10 @@ class opts(object):
         # Set device based on gpu_id, use CPU if gpu_id is -1
         opt.device = f"cuda:{opt.gpu_id}" if opt.gpu_id >= 0 else "cpu"
 
-        # Check if the dataset directory exists, raise error if not
-        opt.data_dir = os.path.join(opt.root_dir, opt.data_dir)
-        if not os.path.exists(opt.data_dir):
+        # Check if the dataset directory exists, raise error if not (skip in test mode)
+        if not os.path.isabs(opt.data_dir):
+            opt.data_dir = os.path.join(opt.root_dir, opt.data_dir)
+        if not opt.test and not os.path.exists(opt.data_dir):
             raise ValueError(f"Data directory {opt.data_dir} not found")
 
         # Set logging directory
@@ -153,13 +162,24 @@ class opts(object):
 
         # Handle test case
         if opt.test:
+            if opt.load_model_path is None:
+                raise ValueError("--load_model_path must be specified in test mode")
             load_model_path = os.path.join(opt.root_dir, opt.load_model_path)
             if not os.path.isfile(load_model_path) or not load_model_path.endswith(
                 ".pt"
-            ):  # Check if model file exists and is valid
+            ):
                 raise FileNotFoundError(
                     f"Model not found at {opt.load_model_path} for testing"
                 )
             opt.load_model_path = load_model_path
+
+            if opt.image_path is None:
+                raise ValueError("--image_path must be specified in test mode")
+            if not os.path.isfile(opt.image_path):
+                raise FileNotFoundError(f"Image not found at {opt.image_path}")
+
+            if opt.output_dir is None:
+                opt.output_dir = os.path.join(opt.root_dir, "outputs")
+            os.makedirs(opt.output_dir, exist_ok=True)
 
         return opt

@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import openpyxl
 
+from mpivr20_cms import get_clean_output_dir
+
 
 class ImageExtractor:
     def __init__(self, product_dir: str, save_dir: str):
@@ -104,7 +106,7 @@ class ImageExtractor:
 
 if __name__ == "__main__":
     raw_dir = "data/raw"
-    processed_dir = "data/processed"
+    processed_dir = get_clean_output_dir()
 
     for subfolder in os.listdir(raw_dir):
         product_dir = os.path.join(raw_dir, subfolder)
