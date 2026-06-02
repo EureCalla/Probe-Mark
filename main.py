@@ -4,9 +4,10 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from mpivr20_cms import get_clean_output_dir
+from mpivr20_cms import get_clean_output_dir, get_output_root_dir
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_ROOT = get_output_root_dir()
 OUTPUT_BASE = get_clean_output_dir()
 EXCEL_EXTENSIONS = (".xlsx", ".xlsm")
 EXCEL_FILETYPES = [("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")]
@@ -85,6 +86,14 @@ def format_clean_result(result: dict) -> str:
         lines.append(f"略過檔案: {len(failed)}")
         for item in failed:
             lines.append(f"- {item['excel']}: {item['error']}")
+    failed_samples = result.get("failed_samples", [])
+    if failed_samples:
+        lines.append(f"failed samples: {len(failed_samples)}")
+        for item in failed_samples:
+            lines.append(
+                f"- {item['output_name']} / {item['sample_name']}: "
+                f"ground_truth {item['ratio']:.1%}"
+            )
     return "\n".join(lines)
 
 
@@ -106,7 +115,7 @@ def open_clean_dialog(parent, status_var):
 
     top = ttk.Frame(dialog, padding=12)
     top.pack(fill=tk.X)
-    ttk.Label(top, text=f"輸出位置：{OUTPUT_BASE}").pack(side=tk.LEFT)
+    ttk.Label(top, text=f"輸出根目錄：{OUTPUT_ROOT}（清洗資料：data）").pack(side=tk.LEFT)
     ttk.Checkbutton(top, text="強制重建快取", variable=force_var).pack(side=tk.RIGHT)
 
     list_box = ttk.LabelFrame(dialog, text="待處理 Excel", padding=8)

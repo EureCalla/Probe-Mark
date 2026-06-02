@@ -71,10 +71,10 @@ data/processed/
 DB 位置：
 
 ```text
-database/probe_mark.db
+\\mpi-file01\VPCRD2-AI\08_Training\Probe-Mark\probe_mark.db
 ```
 
-此 DB 是本機快取產物，已由 `.gitignore` 排除。schema 由 `database/db_manager.py` 的 `DBManager.init_db()` 建立。
+清洗輸出的圖片資料放在同一個共享根目錄的 `data\{dataset_name}` 底下。schema 由 `database/db_manager.py` 的 `DBManager.init_db()` 建立。
 
 核心 tables：
 
