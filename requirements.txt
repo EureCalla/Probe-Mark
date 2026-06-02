@@ -5,6 +5,7 @@
 torch
 torchmetrics
 segmentation-models-pytorch
+tensorboard
 
 # --- Image / array ---
 numpy

@@ -1,8 +1,10 @@
 import os
+import re
 import sys
-import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import segmentation_models_pytorch as smp
 import torch
@@ -15,6 +17,7 @@ if str(PROBE_MARK_DIR) not in sys.path:
     sys.path.insert(0, str(PROBE_MARK_DIR))
 
 from database import DBManager
+from mpivr20_cms import get_output_root_dir
 from datasets import (
     AUGMENTATION_TRANSFORMS,
     BASIC_TRANSFORMS,
@@ -46,6 +49,7 @@ class Trainer:
         lr=1e-4,
         eta_min=1e-5,
         gpu_id=0,
+        model_output_root=None,
         db=None,
     ):
         if dataset_ids is None:
@@ -73,6 +77,7 @@ class Trainer:
         self.lr = float(lr)
         self.eta_min = float(eta_min)
         self.gpu_id = int(gpu_id)
+        self.model_output_root = model_output_root or get_output_root_dir()
         self.db = db or DBManager()
 
     def _ensure_split(self):
@@ -128,9 +133,10 @@ class Trainer:
         return samples
 
     def _make_opt(self, run_id):
-        timestamp = time.strftime("%Y-%m-%d-%H-%M-%S")
         exp_id = self.run_name or f"run_{run_id}"
-        log_dir = REPO_ROOT / "runs" / exp_id / f"run_{run_id}_{timestamp}"
+        date_text = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d")
+        folder_name = f"{self.safe_folder_name(exp_id)}_{date_text}"
+        log_dir = Path(self.model_output_root) / "model" / folder_name
         log_dir.mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(
             root_dir=str(REPO_ROOT),
@@ -155,6 +161,10 @@ class Trainer:
             log_dir=str(log_dir),
             exp_id=exp_id,
         )
+
+    @staticmethod
+    def safe_folder_name(name: str) -> str:
+        return re.sub(r'[<>:"/\\\\|?*]+', "_", name.strip()) or "probe_mark"
 
     def run(self):
         self.db.init_db()
@@ -281,4 +291,5 @@ class Trainer:
             "lr": self.lr,
             "eta_min": self.eta_min,
             "gpu_id": self.gpu_id,
+            "model_output_root": self.model_output_root,
         }

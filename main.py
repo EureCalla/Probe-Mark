@@ -1,9 +1,12 @@
 import logging
 import os
+import re
 import sys
 import threading
+from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from zoneinfo import ZoneInfo
 
 from mpivr20_cms import get_clean_output_dir, get_output_root_dir
 
@@ -97,6 +100,18 @@ def choose_dir(var):
     path = filedialog.askdirectory()
     if path:
         var.set(path)
+
+
+def safe_folder_name(name: str) -> str:
+    """Return a Windows-safe folder name for user-entered run names."""
+    return re.sub(r'[<>:"/\\\\|?*]+', "_", name.strip()) or "probe_mark"
+
+
+def model_output_path(root_dir: str, run_name: str) -> str:
+    """Build the model output folder path for the current Taiwan date."""
+    date_text = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d")
+    folder_name = f"{safe_folder_name(run_name)}_{date_text}"
+    return os.path.join(root_dir, "model", folder_name)
 
 
 def open_clean_dialog(parent, status_var):
@@ -310,11 +325,13 @@ def model_options():
 def open_train_dialog(parent, status_var):
     dialog = tk.Toplevel(parent)
     dialog.title("模型訓練")
-    dialog.geometry("880x600")
+    dialog.geometry("900x680")
     dialog.transient(parent)
     dialog.grab_set()
 
     labels, mapping, sample_counts = dataset_options()
+    model_root_var = tk.StringVar(value=OUTPUT_ROOT)
+    model_path_var = tk.StringVar()
     sample_summary_var = tk.StringVar(
         value=(
             "排除: 0 個；Train/Test pool 有效: 0 / 無效: 0；"
@@ -337,6 +354,15 @@ def open_train_dialog(parent, status_var):
         ("gpu_id", "GPU ID", "0", "使用哪張 GPU；-1 表示 CPU。"),
     ]
     fields = {key: tk.StringVar(value=default) for key, _label, default, _help in field_defs}
+
+    def update_model_path(*_args) -> None:
+        """Refresh the displayed model output folder."""
+        run_name = fields["run_name"].get().strip() or "probe_mark"
+        model_path_var.set(model_output_path(model_root_var.get().strip(), run_name))
+
+    fields["run_name"].trace_add("write", update_model_path)
+    model_root_var.trace_add("write", update_model_path)
+    update_model_path()
 
     body = ttk.Frame(dialog, padding=12)
     body.pack(fill=tk.BOTH, expand=True)
@@ -481,7 +507,19 @@ def open_train_dialog(parent, status_var):
     else:
         sample_summary_var.set("尚無 dataset，請先執行資料清洗")
 
-    for row, (key, label, _default, help_text) in enumerate(field_defs, start=2):
+    ttk.Label(body, text="模型根目錄").grid(row=2, column=0, sticky="e", pady=3, padx=4)
+    ttk.Entry(body, textvariable=model_root_var, width=48).grid(
+        row=2, column=2, sticky="w", pady=3
+    )
+    ttk.Button(body, text="資料夾", command=lambda: choose_dir(model_root_var)).grid(
+        row=2, column=1, sticky="w", pady=3, padx=4
+    )
+    ttk.Label(body, text="儲存位置").grid(row=3, column=0, sticky="e", pady=3, padx=4)
+    ttk.Label(body, textvariable=model_path_var, foreground="#1e6fba", wraplength=520).grid(
+        row=3, column=2, sticky="w", pady=3
+    )
+
+    for row, (key, label, _default, help_text) in enumerate(field_defs, start=4):
         ttk.Label(body, text=label).grid(row=row, column=0, sticky="e", pady=3, padx=4)
         ttk.Entry(body, textvariable=fields[key], width=32).grid(
             row=row, column=2, sticky="w", pady=3
@@ -516,6 +554,10 @@ def open_train_dialog(parent, status_var):
         if not 0 < test_ratio < 1:
             messagebox.showwarning("模型訓練", "Test 比例需介於 0 和 1 之間", parent=dialog)
             return
+        model_output_root = model_root_var.get().strip()
+        if not model_output_root:
+            messagebox.showwarning("模型訓練", "模型根目錄不可空白", parent=dialog)
+            return
 
         def task():
             from train_module import Trainer
@@ -535,6 +577,7 @@ def open_train_dialog(parent, status_var):
                 lr=float(fields["lr"].get()),
                 eta_min=float(fields["eta_min"].get()),
                 gpu_id=int(fields["gpu_id"].get()),
+                model_output_root=model_output_root,
             ).run()
 
         run_background(status_var, "模型訓練完成", task)
