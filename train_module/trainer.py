@@ -48,7 +48,7 @@ class Trainer:
         num_workers=0,
         lr=1e-4,
         eta_min=1e-5,
-        gpu_id=0,
+        gpu_id=-1,
         model_output_root=None,
         db=None,
     ):
