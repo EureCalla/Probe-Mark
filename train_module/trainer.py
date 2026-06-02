@@ -136,7 +136,7 @@ class Trainer:
     def _make_opt(self, run_id):
         exp_id = self.run_name or f"run_{run_id}"
         date_text = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d")
-        folder_name = f"{self.safe_folder_name(exp_id)}_{date_text}"
+        folder_name = f"run{run_id}_{self.safe_folder_name(exp_id)}_{date_text}"
         log_dir = Path(self.model_output_root) / "model" / folder_name
         log_dir.mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(

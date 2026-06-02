@@ -114,7 +114,7 @@ def safe_folder_name(name: str) -> str:
 def model_output_path(root_dir: str, run_name: str) -> str:
     """Build the model output folder path for the current Taiwan date."""
     date_text = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d")
-    folder_name = f"{safe_folder_name(run_name)}_{date_text}"
+    folder_name = f"run{{自動產生}}_{safe_folder_name(run_name)}_{date_text}"
     return os.path.join(root_dir, "model", folder_name)
 
 
