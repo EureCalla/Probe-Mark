@@ -867,6 +867,39 @@ def open_predict_dialog(parent, status_var):
     metric_canvas.draw()
     metric_canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
+    def fmt_metric(value):
+        if value is None:
+            return "-"
+        try:
+            return f"{float(value):.4f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def fmt_seconds(value):
+        if value is None:
+            return "-"
+        try:
+            total_seconds = int(float(value))
+        except (TypeError, ValueError):
+            return "-"
+        hours, rem = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+    def parse_param(value):
+        if value is None:
+            return None
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return value
+
+    def best_metric(epoch_rows, key, lower_is_better=False):
+        values = [(row["epoch"], row[key]) for row in epoch_rows if row.get(key) is not None]
+        if not values:
+            return None, None
+        return min(values, key=lambda item: item[1]) if lower_is_better else max(values, key=lambda item: item[1])
+
     def refresh_model_metrics(*_):
         model_id = mapping.get(model_var.get())
         if model_id is None:
@@ -884,26 +917,86 @@ def open_predict_dialog(parent, status_var):
             metric_status_var.set("")
             metric_canvas.draw_idle()
             return
+        run = db.get_training_run(model["run_id"]) or {}
+        params = {key: parse_param(value) for key, value in db.get_training_run_params(model["run_id"]).items()}
+        test_rows = db.list_test_metrics(model["run_id"])
+        latest_test = test_rows[0] if test_rows else None
         epoch_rows = db.list_epoch_metrics(model["run_id"])
-        if not epoch_rows:
+
+        summary_lines = [
+            (
+                f"model#{model_id} / run#{model['run_id']} | "
+                f"{model.get('run_name') or '-'} | "
+                f"{model.get('encoder_name') or '-'} + {model.get('decoder_name') or '-'} | "
+                f"status={model.get('run_status') or run.get('status') or '-'}"
+            ),
+            (
+                f"epochs={run.get('epochs') or params.get('max_epochs') or len(epoch_rows) or '-'}，"
+                f"batch={run.get('batch_size') or params.get('batch_size') or '-'}，"
+                f"lr={fmt_metric(run.get('lr') or params.get('lr'))}，"
+                f"duration={fmt_seconds(run.get('duration_seconds'))}"
+            ),
+        ]
+
+        if epoch_rows:
+            epochs = [row["epoch"] for row in epoch_rows]
+            init_metric_axes()
+            metric_ax_loss.plot(epochs, [row["train_loss"] for row in epoch_rows], "-o", label="train loss")
+            metric_ax_loss.plot(epochs, [row["val_loss"] for row in epoch_rows], "-o", label="val loss")
+            metric_ax_loss.legend(loc="best")
+            metric_ax_iou.plot(epochs, [row["train_iou"] for row in epoch_rows], "-o", label="train IoU")
+            metric_ax_iou.plot(epochs, [row["val_iou"] for row in epoch_rows], "-o", label="val IoU")
+            metric_ax_iou.plot(epochs, [row["train_dice"] for row in epoch_rows], "--", label="train Dice")
+            metric_ax_iou.plot(epochs, [row["val_dice"] for row in epoch_rows], "--", label="val Dice")
+            metric_ax_iou.legend(loc="best")
+
+            best_val_loss_epoch, best_val_loss = best_metric(epoch_rows, "val_loss", lower_is_better=True)
+            best_val_iou_epoch, best_val_iou = best_metric(epoch_rows, "val_iou")
+            best_val_dice_epoch, best_val_dice = best_metric(epoch_rows, "val_dice")
+            final_row = epoch_rows[-1]
+            summary_lines.extend(
+                [
+                    (
+                        "Best validation："
+                        f"loss={fmt_metric(best_val_loss)}@epoch{best_val_loss_epoch}，"
+                        f"IoU={fmt_metric(best_val_iou)}@epoch{best_val_iou_epoch}，"
+                        f"Dice={fmt_metric(best_val_dice)}@epoch{best_val_dice_epoch}"
+                    ),
+                    (
+                        f"Final epoch {final_row['epoch']}："
+                        f"train loss={fmt_metric(final_row.get('train_loss'))}，"
+                        f"val loss={fmt_metric(final_row.get('val_loss'))}，"
+                        f"train IoU={fmt_metric(final_row.get('train_iou'))}，"
+                        f"val IoU={fmt_metric(final_row.get('val_iou'))}，"
+                        f"train Dice={fmt_metric(final_row.get('train_dice'))}，"
+                        f"val Dice={fmt_metric(final_row.get('val_dice'))}"
+                    ),
+                ]
+            )
+        else:
             init_metric_axes("No epoch metrics")
-            metric_status_var.set(f"model#{model_id} / run#{model['run_id']} 沒有 epoch metrics 紀錄")
-            metric_canvas.draw_idle()
-            return
+            summary_lines.append("Best / Final：沒有 epoch metrics 紀錄")
 
-        epochs = [row["epoch"] for row in epoch_rows]
-        init_metric_axes()
-        metric_ax_loss.plot(epochs, [row["train_loss"] for row in epoch_rows], "-o", label="train")
-        metric_ax_loss.plot(epochs, [row["val_loss"] for row in epoch_rows], "-o", label="validation")
-        metric_ax_loss.legend(loc="best")
-        metric_ax_iou.plot(epochs, [row["train_iou"] for row in epoch_rows], "-o", label="train")
-        metric_ax_iou.plot(epochs, [row["val_iou"] for row in epoch_rows], "-o", label="validation")
-        metric_ax_iou.legend(loc="best")
+        if latest_test:
+            summary_lines.append(
+                "Test："
+                f"n={latest_test.get('n_samples')}，"
+                f"loss={fmt_metric(latest_test.get('test_loss'))}，"
+                f"IoU={fmt_metric(latest_test.get('test_iou'))}，"
+                f"Dice={fmt_metric(latest_test.get('test_dice'))}，"
+                f"AP={fmt_metric(latest_test.get('test_ap'))}"
+            )
+        else:
+            summary_lines.append("Test：沒有 test metrics 紀錄")
 
-        val_ious = [row["val_iou"] for row in epoch_rows if row["val_iou"] is not None]
-        best_val_iou = max(val_ious) if val_ious else None
-        suffix = f"，best validation IoU={best_val_iou:.4f}" if best_val_iou is not None else ""
-        metric_status_var.set(f"model#{model_id} / run#{model['run_id']}，epochs={len(epoch_rows)}{suffix}")
+        summary_lines.append(
+            "Datasets："
+            f"train={params.get('train_dataset_ids') or '-'}，"
+            f"validation={params.get('validation_dataset_ids') or '-'}，"
+            f"test_ratio={params.get('test_ratio') or '-'}"
+        )
+        summary_lines.append(f"Model path：{model.get('model_dir') or '-'}")
+        metric_status_var.set("\n".join(summary_lines))
         metric_canvas.draw_idle()
 
     model_combo.bind("<<ComboboxSelected>>", refresh_model_metrics)
