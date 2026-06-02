@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import threading
@@ -12,16 +13,23 @@ OUTPUT_BASE = get_clean_output_dir()
 EXCEL_EXTENSIONS = (".xlsx", ".xlsm")
 EXCEL_FILETYPES = [("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")]
 
+logger = logging.getLogger("probe_mark.gui")
 
-def run_background(status_var, done_message, target):
+
+def run_background(status_var, done_message, target, show_done_popup=True):
     def worker():
         try:
             status_var.set("執行中...")
+            logger.info("%s 開始…", done_message)
             result = target()
             status_var.set(done_message)
-            messagebox.showinfo(done_message, str(result) if result is not None else done_message)
+            text = str(result) if result is not None else done_message
+            logger.info("%s：%s", done_message, text)
+            if show_done_popup:
+                messagebox.showinfo(done_message, text)
         except Exception as exc:
             status_var.set("執行失敗")
+            logger.exception("%s 失敗：%s: %s", done_message, type(exc).__name__, exc)
             messagebox.showerror("執行失敗", f"{type(exc).__name__}: {exc}")
 
     threading.Thread(target=worker, daemon=True).start()
@@ -76,29 +84,12 @@ def choose_excel_folder(callback) -> None:
 
 
 def format_clean_result(result: dict) -> str:
-    """Build the final clean dialog message, including skipped Excel files."""
+    """Build the final clean log summary."""
     lines = [
         f"成功 dataset ids: {result['dataset_ids']}",
         f"成功樣本數: {result['total_samples']}",
+        f"略過檔案: {len(result.get('failed', []))}",
     ]
-    failed = result.get("failed", [])
-    if failed:
-        lines.append(f"略過檔案: {len(failed)}")
-        for item in failed:
-            lines.append(f"- {item['excel']}: {item['error']}")
-    failed_samples = result.get("failed_samples", [])
-    if failed_samples:
-        lines.append(f"failed samples: {len(failed_samples)}")
-        for item in failed_samples:
-            if item["reason"] == "area_too_large":
-                detail = f"ground_truth {item['ratio']:.1%}"
-            elif item["reason"] == "area_too_small":
-                detail = f"ground_truth {item['pixels']} px"
-            else:
-                detail = "ground_truth 不符合清洗規則"
-            lines.append(
-                f"- {item['output_name']} / {item['sample_name']}: {detail}"
-            )
     return "\n".join(lines)
 
 
@@ -259,7 +250,7 @@ def open_clean_dialog(parent, status_var):
             result = service.run()
             return format_clean_result(result)
 
-        run_background(status_var, "資料清洗完成", task)
+        run_background(status_var, "資料清洗完成", task, show_done_popup=False)
         dialog.destroy()
 
     actions = ttk.Frame(dialog, padding=12)
@@ -475,39 +466,51 @@ def open_predict_dialog(parent, status_var):
 
 
 def main():
+    from gui.log_panel import install_log_panel
+
     root = tk.Tk()
     root.title("Probe-Mark")
-    root.geometry("540x300")
-    root.resizable(False, False)
+    root.geometry("860x600")
+    root.minsize(720, 480)
 
-    ttk.Label(root, text="Probe-Mark", font=("Arial", 18, "bold")).pack(pady=(22, 6))
-    ttk.Label(root, text="探針痕跡影像辨識").pack(pady=(0, 18))
+    header = ttk.Frame(root, padding=(14, 10, 14, 4))
+    header.pack(fill=tk.X)
+    ttk.Label(header, text="Probe-Mark", font=("Arial", 16, "bold")).pack(side=tk.LEFT)
+    ttk.Label(header, text="  探針痕跡影像辨識", foreground="#666").pack(
+        side=tk.LEFT, padx=(4, 0)
+    )
 
     status_var = tk.StringVar(value="待命")
 
-    btn_frame = ttk.Frame(root)
-    btn_frame.pack(pady=4)
+    ctrl = ttk.Frame(root, padding=(14, 4, 14, 8))
+    ctrl.pack(fill=tk.X)
     ttk.Button(
-        btn_frame,
+        ctrl,
         text="資料清洗",
-        width=16,
+        width=14,
         command=lambda: open_clean_dialog(root, status_var),
-    ).grid(row=0, column=0, padx=8)
+    ).pack(side=tk.LEFT, padx=(0, 6))
     ttk.Button(
-        btn_frame,
+        ctrl,
         text="模型訓練",
-        width=16,
+        width=14,
         command=lambda: open_train_dialog(root, status_var),
-    ).grid(row=0, column=1, padx=8)
+    ).pack(side=tk.LEFT, padx=6)
     ttk.Button(
-        btn_frame,
+        ctrl,
         text="模型預測",
-        width=16,
+        width=14,
         command=lambda: open_predict_dialog(root, status_var),
-    ).grid(row=0, column=2, padx=8)
+    ).pack(side=tk.LEFT, padx=6)
+    ttk.Label(ctrl, text="狀態：", foreground="#666").pack(side=tk.LEFT, padx=(16, 0))
+    ttk.Label(ctrl, textvariable=status_var, foreground="#1e6fba").pack(side=tk.LEFT)
 
-    ttk.Label(root, textvariable=status_var, foreground="blue").pack(pady=20)
+    ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
+    log_panel = install_log_panel(root, logger_name="probe_mark")
+    log_panel.pack(fill=tk.BOTH, expand=True, padx=14, pady=(8, 12))
+
+    logger.info("Probe-Mark 啟動完成，等待操作")
     root.mainloop()
 
 
