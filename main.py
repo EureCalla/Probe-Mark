@@ -338,13 +338,18 @@ def open_train_dialog(parent, status_var):
     body.columnconfigure(2, weight=1)
     all_dataset_ids = [mapping[label] for label in labels]
 
+    label_for = {dataset_id: label for label, dataset_id in mapping.items()}
+    excluded_ids: set[int] = set()
+    test_selected_ids: set[int] = set()
+
     ttk.Label(body, text="資料集選擇").grid(row=0, column=0, sticky="ne", pady=4, padx=4)
     dataset_frame = ttk.Frame(body)
     dataset_frame.grid(row=0, column=2, sticky="nsew", pady=4, padx=4)
     dataset_frame.columnconfigure(0, weight=1)
     dataset_frame.columnconfigure(1, weight=1)
+    dataset_frame.rowconfigure(0, weight=1)
 
-    def _build_dataset_listbox(parent, title: str) -> tk.Listbox:
+    def _build_dataset_listbox(parent, title: str) -> tuple[ttk.LabelFrame, tk.Listbox]:
         wrap = ttk.LabelFrame(parent, text=title, padding=4)
         listbox = tk.Listbox(
             wrap,
@@ -356,75 +361,111 @@ def open_train_dialog(parent, status_var):
         listbox.configure(yscrollcommand=sb.set)
         listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
-        for label in labels:
-            listbox.insert(tk.END, label)
         return wrap, listbox
 
-    exclude_wrap, exclude_list = _build_dataset_listbox(dataset_frame, "排除清單（留空＝全部使用）")
-    exclude_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+    candidate_wrap, candidate_list = _build_dataset_listbox(dataset_frame, "可用資料集")
+    candidate_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
     test_wrap, dataset_list = _build_dataset_listbox(dataset_frame, "Test Dataset")
     test_wrap.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
-    ttk.Label(body, textvariable=sample_summary_var, foreground="#1e6fba").grid(
-        row=1, column=2, sticky="w", padx=4, pady=(0, 6)
+    candidate_actions = ttk.Frame(dataset_frame)
+    candidate_actions.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
+    exclude_btn = ttk.Button(candidate_actions, text="排除選取")
+    exclude_btn.pack(side=tk.LEFT)
+    restore_btn = ttk.Button(candidate_actions, text="復原全部")
+    restore_btn.pack(side=tk.LEFT, padx=6)
+    excluded_count_var = tk.StringVar(value="已排除: 0")
+    ttk.Label(candidate_actions, textvariable=excluded_count_var, foreground="#888").pack(
+        side=tk.RIGHT
     )
 
-    def selected_excluded_ids() -> set[int]:
-        """Return dataset ids the user wants to exclude from training entirely."""
-        return {mapping[exclude_list.get(i)] for i in exclude_list.curselection()}
+    ttk.Label(body, textvariable=sample_summary_var, foreground="#1e6fba").grid(
+        row=1, column=2, sticky="w", padx=4, pady=(4, 6)
+    )
+
+    def visible_dataset_ids() -> list[int]:
+        return [d for d in all_dataset_ids if d not in excluded_ids]
+
+    def refresh_listboxes() -> None:
+        visible = visible_dataset_ids()
+        candidate_list.delete(0, tk.END)
+        for d in visible:
+            candidate_list.insert(tk.END, label_for[d])
+        dataset_list.delete(0, tk.END)
+        for idx, d in enumerate(visible):
+            dataset_list.insert(tk.END, label_for[d])
+            if d in test_selected_ids:
+                dataset_list.selection_set(idx)
+        excluded_count_var.set(f"已排除: {len(excluded_ids)}")
+        update_sample_summary()
 
     def selected_test_dataset_ids() -> list[int]:
-        """Return dataset ids selected as test datasets, excluding any in the exclude list."""
-        excluded = selected_excluded_ids()
-        return [
-            mapping[dataset_list.get(i)]
-            for i in dataset_list.curselection()
-            if mapping[dataset_list.get(i)] not in excluded
-        ]
+        """Return dataset ids selected as test (from the canonical set)."""
+        return [d for d in visible_dataset_ids() if d in test_selected_ids]
 
     def selected_train_dataset_ids() -> list[int]:
-        """Return dataset ids that are neither excluded nor selected as test."""
-        excluded = selected_excluded_ids()
-        test_ids = set(selected_test_dataset_ids())
-        return [
-            dataset_id
-            for dataset_id in all_dataset_ids
-            if dataset_id not in excluded and dataset_id not in test_ids
-        ]
+        """Return visible dataset ids that are not selected as test."""
+        return [d for d in visible_dataset_ids() if d not in test_selected_ids]
 
     def update_sample_summary(_event: tk.Event | None = None) -> None:
         """Refresh sample counts for excluded, train and test dataset groups."""
-        excluded = selected_excluded_ids()
         train_ids = selected_train_dataset_ids()
         test_ids = selected_test_dataset_ids()
-        train_valid = sum(sample_counts[dataset_id]["active"] for dataset_id in train_ids)
-        train_invalid = sum(sample_counts[dataset_id]["failed"] for dataset_id in train_ids)
-        test_valid = sum(sample_counts[dataset_id]["active"] for dataset_id in test_ids)
-        test_invalid = sum(sample_counts[dataset_id]["failed"] for dataset_id in test_ids)
+        train_valid = sum(sample_counts[d]["active"] for d in train_ids)
+        train_invalid = sum(sample_counts[d]["failed"] for d in train_ids)
+        test_valid = sum(sample_counts[d]["active"] for d in test_ids)
+        test_invalid = sum(sample_counts[d]["failed"] for d in test_ids)
         total_valid = train_valid + test_valid
         validation_ratio = test_valid / total_valid if total_valid else 0.0
         sample_summary_var.set(
-            f"排除: {len(excluded)} 個；"
+            f"排除: {len(excluded_ids)} 個；"
             f"Train 有效: {train_valid} / 無效: {train_invalid}；"
             f"Test 有效: {test_valid} / 無效: {test_invalid}\n"
             f"驗證比例: {validation_ratio:.1%}"
         )
 
-    exclude_list.bind("<<ListboxSelect>>", update_sample_summary)
-    dataset_list.bind("<<ListboxSelect>>", update_sample_summary)
+    def on_exclude() -> None:
+        visible = visible_dataset_ids()
+        picks = [visible[i] for i in candidate_list.curselection()]
+        if not picks:
+            messagebox.showwarning(
+                "排除", "請先在「可用資料集」中勾選要排除的項目", parent=dialog
+            )
+            return
+        excluded_ids.update(picks)
+        test_selected_ids.difference_update(picks)
+        refresh_listboxes()
+
+    def on_restore() -> None:
+        if not excluded_ids:
+            return
+        excluded_ids.clear()
+        refresh_listboxes()
+
+    def on_test_selection_change(_event: tk.Event | None = None) -> None:
+        visible = visible_dataset_ids()
+        test_selected_ids.clear()
+        for i in dataset_list.curselection():
+            test_selected_ids.add(visible[i])
+        update_sample_summary()
+
+    exclude_btn.configure(command=on_exclude)
+    restore_btn.configure(command=on_restore)
+    dataset_list.bind("<<ListboxSelect>>", on_test_selection_change)
     ttk.Button(
         body,
         text="?",
         width=3,
         command=lambda: messagebox.showinfo(
             "Dataset",
-            "左側：勾選不想進入訓練流程的 dataset（留空＝全部使用）。\n"
-            "右側：從未被排除的 dataset 中勾選作為 test；其餘為 train。",
+            "左側「可用資料集」：勾選後按【排除選取】，項目會從兩邊清單消失；\n"
+            "按【復原全部】可把所有被排除的 dataset 拉回來。\n\n"
+            "右側「Test Dataset」：從可用資料集中勾選作為 test；其餘為 train。",
             parent=dialog,
         ),
     ).grid(row=0, column=1, sticky="nw", pady=4, padx=4)
     if labels:
-        update_sample_summary()
+        refresh_listboxes()
     else:
         sample_summary_var.set("尚無 dataset，請先執行資料清洗")
 
