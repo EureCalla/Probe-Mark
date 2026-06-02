@@ -115,6 +115,45 @@ class DBManager:
                     FOREIGN KEY (run_id) REFERENCES training_runs(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS training_run_params (
+                    run_id INTEGER NOT NULL,
+                    param_name TEXT NOT NULL,
+                    param_value TEXT,
+                    PRIMARY KEY (run_id, param_name),
+                    FOREIGN KEY (run_id) REFERENCES training_runs(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS training_epoch_metrics (
+                    run_id INTEGER NOT NULL,
+                    epoch INTEGER NOT NULL,
+                    train_loss REAL,
+                    train_ap REAL,
+                    train_iou REAL,
+                    train_dice REAL,
+                    val_loss REAL,
+                    val_ap REAL,
+                    val_iou REAL,
+                    val_dice REAL,
+                    lr REAL,
+                    created_at TEXT DEFAULT (datetime('now','localtime')),
+                    PRIMARY KEY (run_id, epoch),
+                    FOREIGN KEY (run_id) REFERENCES training_runs(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS training_test_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    split_id INTEGER NOT NULL,
+                    n_samples INTEGER NOT NULL,
+                    test_loss REAL,
+                    test_iou REAL,
+                    test_dice REAL,
+                    test_ap REAL,
+                    created_at TEXT DEFAULT (datetime('now','localtime')),
+                    FOREIGN KEY (run_id) REFERENCES training_runs(id) ON DELETE CASCADE,
+                    FOREIGN KEY (split_id) REFERENCES dataset_splits(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS prediction_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     model_id INTEGER NOT NULL,
@@ -469,6 +508,54 @@ class DBManager:
                 WHERE id = ?
                 """,
                 params,
+            )
+
+    def replace_training_run_params(self, run_id, params):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM training_run_params WHERE run_id = ?", (run_id,))
+            conn.executemany(
+                """
+                INSERT INTO training_run_params (run_id, param_name, param_value)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    (run_id, str(key), self._json(value))
+                    for key, value in sorted(params.items())
+                ],
+            )
+
+    def replace_epoch_metrics(self, run_id, metrics):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM training_epoch_metrics WHERE run_id = ?", (run_id,))
+            conn.executemany(
+                """
+                INSERT INTO training_epoch_metrics
+                    (run_id, epoch, train_loss, train_ap, train_iou, train_dice,
+                     val_loss, val_ap, val_iou, val_dice, lr)
+                VALUES
+                    (:run_id, :epoch, :train_loss, :train_ap, :train_iou, :train_dice,
+                     :val_loss, :val_ap, :val_iou, :val_dice, :lr)
+                """,
+                [dict(row, run_id=run_id) for row in metrics],
+            )
+
+    def insert_test_metrics(self, run_id, split_id, metrics):
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO training_test_metrics
+                    (run_id, split_id, n_samples, test_loss, test_iou, test_dice, test_ap)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    split_id,
+                    metrics["n_samples"],
+                    metrics.get("test_loss"),
+                    metrics.get("test_iou"),
+                    metrics.get("test_dice"),
+                    metrics.get("test_ap"),
+                ),
             )
 
     def insert_model(self, run_id, model_dir, best_model_path=None, snapshot_path=None, opt_path=None):

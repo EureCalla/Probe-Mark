@@ -316,11 +316,16 @@ def open_train_dialog(parent, status_var):
 
     labels, mapping, sample_counts = dataset_options()
     sample_summary_var = tk.StringVar(
-        value="排除: 0 個；Train 有效: 0 / 無效: 0；Test 有效: 0 / 無效: 0\n驗證比例: 0.0%"
+        value=(
+            "排除: 0 個；Train/Test pool 有效: 0 / 無效: 0；"
+            "Validation 有效: 0 / 無效: 0\n"
+            "Validation 比例: 0.0%；Test 比例: 20.0%"
+        )
     )
     field_defs = [
         ("run_name", "Run 名稱", "probe_mark", "本次訓練的名稱；會影響 runs/ 底下的輸出資料夾。"),
         ("split_name", "Split 名稱", "default", "資料切分名稱；相同 dataset + split 名稱會覆寫舊切分。"),
+        ("test_ratio", "Test 比例", "0.2", "從 train/test pool 中切出多少比例做 final test；0.2 表示 80% train / 20% test。"),
         ("encoder_name", "Encoder", "resnet18", "特徵抽取 backbone，例如 resnet18、resnet50；需為 segmentation_models_pytorch 支援名稱。"),
         ("encoder_weights", "Encoder 權重", "imagenet", "Encoder 預訓練權重；常用 imagenet，留空表示不載入預訓練權重。"),
         ("decoder_name", "Decoder", "FPN", "分割模型架構，例如 FPN、Unet、DeepLabV3Plus。"),
@@ -340,7 +345,7 @@ def open_train_dialog(parent, status_var):
 
     label_for = {dataset_id: label for label, dataset_id in mapping.items()}
     excluded_ids: set[int] = set()
-    test_selected_ids: set[int] = set()
+    validation_selected_ids: set[int] = set()
 
     ttk.Label(body, text="資料集選擇").grid(row=0, column=0, sticky="ne", pady=4, padx=4)
     dataset_frame = ttk.Frame(body)
@@ -365,7 +370,7 @@ def open_train_dialog(parent, status_var):
 
     candidate_wrap, candidate_list = _build_dataset_listbox(dataset_frame, "可用資料集")
     candidate_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-    test_wrap, dataset_list = _build_dataset_listbox(dataset_frame, "Test Dataset")
+    test_wrap, dataset_list = _build_dataset_listbox(dataset_frame, "Validation Dataset")
     test_wrap.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
     candidate_actions = ttk.Frame(dataset_frame)
@@ -394,34 +399,38 @@ def open_train_dialog(parent, status_var):
         dataset_list.delete(0, tk.END)
         for idx, d in enumerate(visible):
             dataset_list.insert(tk.END, label_for[d])
-            if d in test_selected_ids:
+            if d in validation_selected_ids:
                 dataset_list.selection_set(idx)
         excluded_count_var.set(f"已排除: {len(excluded_ids)}")
         update_sample_summary()
 
-    def selected_test_dataset_ids() -> list[int]:
-        """Return dataset ids selected as test (from the canonical set)."""
-        return [d for d in visible_dataset_ids() if d in test_selected_ids]
+    def selected_validation_dataset_ids() -> list[int]:
+        """Return dataset ids selected as validation datasets."""
+        return [d for d in visible_dataset_ids() if d in validation_selected_ids]
 
     def selected_train_dataset_ids() -> list[int]:
-        """Return visible dataset ids that are not selected as test."""
-        return [d for d in visible_dataset_ids() if d not in test_selected_ids]
+        """Return visible dataset ids that are not selected as validation."""
+        return [d for d in visible_dataset_ids() if d not in validation_selected_ids]
 
     def update_sample_summary(_event: tk.Event | None = None) -> None:
         """Refresh sample counts for excluded, train and test dataset groups."""
         train_ids = selected_train_dataset_ids()
-        test_ids = selected_test_dataset_ids()
-        train_valid = sum(sample_counts[d]["active"] for d in train_ids)
-        train_invalid = sum(sample_counts[d]["failed"] for d in train_ids)
-        test_valid = sum(sample_counts[d]["active"] for d in test_ids)
-        test_invalid = sum(sample_counts[d]["failed"] for d in test_ids)
-        total_valid = train_valid + test_valid
-        validation_ratio = test_valid / total_valid if total_valid else 0.0
+        validation_ids = selected_validation_dataset_ids()
+        train_pool_valid = sum(sample_counts[d]["active"] for d in train_ids)
+        train_pool_invalid = sum(sample_counts[d]["failed"] for d in train_ids)
+        validation_valid = sum(sample_counts[d]["active"] for d in validation_ids)
+        validation_invalid = sum(sample_counts[d]["failed"] for d in validation_ids)
+        total_visible_valid = train_pool_valid + validation_valid
+        validation_ratio = validation_valid / total_visible_valid if total_visible_valid else 0.0
+        try:
+            test_ratio = float(fields["test_ratio"].get())
+        except ValueError:
+            test_ratio = 0.0
         sample_summary_var.set(
             f"排除: {len(excluded_ids)} 個；"
-            f"Train 有效: {train_valid} / 無效: {train_invalid}；"
-            f"Test 有效: {test_valid} / 無效: {test_invalid}\n"
-            f"驗證比例: {validation_ratio:.1%}"
+            f"Train/Test pool 有效: {train_pool_valid} / 無效: {train_pool_invalid}；"
+            f"Validation 有效: {validation_valid} / 無效: {validation_invalid}\n"
+            f"Validation 比例: {validation_ratio:.1%}；Test 比例: {test_ratio:.1%}"
         )
 
     def on_exclude() -> None:
@@ -433,7 +442,7 @@ def open_train_dialog(parent, status_var):
             )
             return
         excluded_ids.update(picks)
-        test_selected_ids.difference_update(picks)
+        validation_selected_ids.difference_update(picks)
         refresh_listboxes()
 
     def on_restore() -> None:
@@ -442,16 +451,17 @@ def open_train_dialog(parent, status_var):
         excluded_ids.clear()
         refresh_listboxes()
 
-    def on_test_selection_change(_event: tk.Event | None = None) -> None:
+    def on_validation_selection_change(_event: tk.Event | None = None) -> None:
         visible = visible_dataset_ids()
-        test_selected_ids.clear()
+        validation_selected_ids.clear()
         for i in dataset_list.curselection():
-            test_selected_ids.add(visible[i])
+            validation_selected_ids.add(visible[i])
         update_sample_summary()
 
     exclude_btn.configure(command=on_exclude)
     restore_btn.configure(command=on_restore)
-    dataset_list.bind("<<ListboxSelect>>", on_test_selection_change)
+    fields["test_ratio"].trace_add("write", lambda *_args: update_sample_summary())
+    dataset_list.bind("<<ListboxSelect>>", on_validation_selection_change)
     ttk.Button(
         body,
         text="?",
@@ -460,7 +470,9 @@ def open_train_dialog(parent, status_var):
             "Dataset",
             "左側「可用資料集」：勾選後按【排除選取】，項目會從兩邊清單消失；\n"
             "按【復原全部】可把所有被排除的 dataset 拉回來。\n\n"
-            "右側「Test Dataset」：從可用資料集中勾選作為 test；其餘為 train。",
+            "右側「Validation Dataset」：從可用資料集中勾選作為 validation。\n"
+            "未排除且未選為 validation 的 dataset 會先作為 train/test pool，"
+            "再依 Test 比例切成 train 與 final test。",
             parent=dialog,
         ),
     ).grid(row=0, column=1, sticky="nw", pady=4, padx=4)
@@ -487,12 +499,22 @@ def open_train_dialog(parent, status_var):
 
     def execute():
         train_dataset_ids = selected_train_dataset_ids()
-        test_dataset_ids = selected_test_dataset_ids()
-        if not test_dataset_ids:
-            messagebox.showwarning("模型訓練", "請先選擇至少一個 test dataset", parent=dialog)
+        validation_dataset_ids = selected_validation_dataset_ids()
+        if not validation_dataset_ids:
+            messagebox.showwarning(
+                "模型訓練", "請先選擇至少一個 validation dataset", parent=dialog
+            )
             return
         if not train_dataset_ids:
             messagebox.showwarning("模型訓練", "至少需要保留一個 train dataset", parent=dialog)
+            return
+        try:
+            test_ratio = float(fields["test_ratio"].get())
+        except ValueError:
+            messagebox.showwarning("模型訓練", "Test 比例必須是數字", parent=dialog)
+            return
+        if not 0 < test_ratio < 1:
+            messagebox.showwarning("模型訓練", "Test 比例需介於 0 和 1 之間", parent=dialog)
             return
 
         def task():
@@ -500,9 +522,10 @@ def open_train_dialog(parent, status_var):
 
             return Trainer(
                 dataset_ids=train_dataset_ids,
-                test_dataset_ids=test_dataset_ids,
+                validation_dataset_ids=validation_dataset_ids,
                 split_name=fields["split_name"].get().strip() or "default",
                 run_name=fields["run_name"].get().strip() or None,
+                test_ratio=test_ratio,
                 encoder_name=fields["encoder_name"].get().strip(),
                 encoder_weights=fields["encoder_weights"].get().strip() or None,
                 decoder_name=fields["decoder_name"].get().strip(),

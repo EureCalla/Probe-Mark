@@ -56,24 +56,29 @@ class Trainer:
 
     def metrics_compute(self, prefix: str, epoch: int):
         """Compute metrics and log to tensorboard"""
+        ap = self.binary_AP.compute().item()
+        iou = self.mIoU.compute().item()
+        dice = self.gds.compute().item()
         self.logger.add_scalar(
             f"{prefix}/Binary Average Precision",
-            self.binary_AP.compute().item(),
+            ap,
             epoch,
         )
         self.logger.add_scalar(
             f"{prefix}/Mean IoU",
-            self.mIoU.compute().item(),
+            iou,
             epoch,
         )
         self.logger.add_scalar(
             f"{prefix}/Generalized Dice Score",
-            self.gds.compute().item(),
+            dice,
             epoch,
         )
 
         self.binary_AP.reset()
         self.mIoU.reset()
+        self.gds.reset()
+        return {"ap": ap, "iou": iou, "dice": dice}
 
     def _load_snapshot(self, path: str):
         """Load training state from snapshot."""
@@ -113,43 +118,99 @@ class Trainer:
                 Accuracy=f"{100 * self.binary_AP.compute().item():.2f}%",
             )
 
-        self.logger.add_scalar("Train/Loss", loss / len(self.train_loader), epoch)
+        avg_loss = loss / len(self.train_loader)
+        self.logger.add_scalar("Train/Loss", avg_loss, epoch)
         self.logger.add_scalar(
             "Learning Rate", self.optimizer.param_groups[0]["lr"], epoch
         )
-        self.metrics_compute("Train", epoch)
+        metrics = self.metrics_compute("Train", epoch)
+        return {
+            "loss": avg_loss,
+            "ap": metrics["ap"],
+            "iou": metrics["iou"],
+            "dice": metrics["dice"],
+            "lr": self.optimizer.param_groups[0]["lr"],
+        }
 
     def validate(self, epoch: int):
         """Validate model on validation set."""
         self.model.eval()
+        loss_total = 0.0
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f"Validate Epoch {epoch:2d}")
             for source, targets in pbar:
                 source, targets = source.to(self.device), targets.to(self.device)
                 output = self.model(source)
                 loss = self.criterion(output, targets.float())
+                loss_total += loss.item()
 
                 self.metrics_update(output, targets)
                 pbar.set_description(
                     f"Accuracy {100 * self.binary_AP.compute().item():.2f}%"
                 )
 
-        val_acc = 100 * self.binary_AP.compute().item()
-        self.logger.add_scalar("Validate/Loss", loss, epoch)
-        self.metrics_compute("Validate", epoch)
-        return val_acc
+        avg_loss = loss_total / len(self.val_loader)
+        self.logger.add_scalar("Validate/Loss", avg_loss, epoch)
+        metrics = self.metrics_compute("Validate", epoch)
+        return {
+            "loss": avg_loss,
+            "ap": metrics["ap"],
+            "iou": metrics["iou"],
+            "dice": metrics["dice"],
+        }
+
+    def evaluate_loader(self, loader: DataLoader, prefix: str, epoch: int = 0):
+        """Evaluate a loader and return loss/AP/IoU/Dice metrics."""
+        self.model.eval()
+        loss_total = 0.0
+        with torch.no_grad():
+            for source, targets in tqdm(loader, desc=f"{prefix} Evaluation"):
+                source, targets = source.to(self.device), targets.to(self.device)
+                output = self.model(source)
+                loss = self.criterion(output, targets.float())
+                loss_total += loss.item()
+                self.metrics_update(output, targets)
+
+        avg_loss = loss_total / len(loader)
+        self.logger.add_scalar(f"{prefix}/Loss", avg_loss, epoch)
+        metrics = self.metrics_compute(prefix, epoch)
+        return {
+            "loss": avg_loss,
+            "ap": metrics["ap"],
+            "iou": metrics["iou"],
+            "dice": metrics["dice"],
+        }
 
     def run(self):
         """Run training and validation over epochs."""
         best_val_acc = 0.0
+        history = []
         # self.prof.start()
         for epoch in range(self.epochs_run, self.max_epochs):
             # self.prof.step()
-            self.train_one_epoch(epoch)
+            train_metrics = self.train_one_epoch(epoch)
             self.lr_scheduler.step()  # Update learning rate
             if self.val_loader is not None:
-                val_acc = self.validate(epoch)
+                val_metrics = self.validate(epoch)
+                val_acc = val_metrics["ap"] * 100
+            else:
+                val_metrics = {}
+                val_acc = 0.0
             self._save_snapshot(epoch)
+            history.append(
+                {
+                    "epoch": epoch,
+                    "train_loss": train_metrics["loss"],
+                    "train_ap": train_metrics["ap"],
+                    "train_iou": train_metrics["iou"],
+                    "train_dice": train_metrics["dice"],
+                    "val_loss": val_metrics.get("loss"),
+                    "val_ap": val_metrics.get("ap"),
+                    "val_iou": val_metrics.get("iou"),
+                    "val_dice": val_metrics.get("dice"),
+                    "lr": train_metrics["lr"],
+                }
+            )
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
@@ -158,3 +219,4 @@ class Trainer:
                 )
 
         # self.prof.stop()
+        return history
