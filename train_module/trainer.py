@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,6 +194,7 @@ class Trainer:
         self.db.replace_training_run_params(run_id, self.training_params())
         opt = self._make_opt(run_id)
 
+        start_time = time.perf_counter()
         try:
             seed_everything(opt.seed)
             train_dataset = SampleListSegmentationDataset(
@@ -237,7 +239,10 @@ class Trainer:
                 classes=1,
             )
             logger = Logger(opt)
-            core = CoreTrainer(opt, model, train_loader, logger, val_loader)
+            core = CoreTrainer(
+                opt, model, train_loader, logger, val_loader,
+                db=self.db, run_id=run_id,
+            )
             epoch_metrics = core.run()
             self.db.replace_epoch_metrics(run_id, epoch_metrics)
             test_metrics = core.evaluate_loader(test_loader, "Test", epoch=self.max_epochs)
@@ -259,7 +264,10 @@ class Trainer:
             opt_path = os.path.join(opt.log_dir, "opt.txt")
             if not os.path.exists(best_model_path):
                 torch.save(core.model.state_dict(), best_model_path)
-            self.db.update_training_run(run_id, status="done")
+            duration = time.perf_counter() - start_time
+            self.db.update_training_run(
+                run_id, status="done", duration_seconds=duration
+            )
             model_id = self.db.insert_model(
                 run_id=run_id,
                 model_dir=opt.log_dir,
@@ -268,11 +276,16 @@ class Trainer:
                 opt_path=opt_path if os.path.exists(opt_path) else None,
             )
         except Exception:
-            self.db.update_training_run(run_id, status="failed")
+            duration = time.perf_counter() - start_time
+            self.db.update_training_run(
+                run_id, status="failed", duration_seconds=duration
+            )
             raise
 
-        print(f"[Train] 完成 run_id={run_id}, model_id={model_id}")
-        return run_id
+        hh, rem = divmod(int(duration), 3600)
+        mm, ss = divmod(rem, 60)
+        print(f"[Train] 完成 run_id={run_id}, model_id={model_id}, 耗時 {hh}:{mm:02d}:{ss:02d}")
+        return {"run_id": run_id, "model_id": model_id, "duration_seconds": duration}
 
     def training_params(self):
         return {

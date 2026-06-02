@@ -19,6 +19,8 @@ class Trainer:
         train_loader: DataLoader,
         logger: Logger,
         val_loader: DataLoader = None,
+        db=None,
+        run_id=None,
     ):
         """Initialize Trainer with model, data loaders, and logger."""
         self.epochs_run = 0
@@ -27,6 +29,8 @@ class Trainer:
         self.eta_min = opt.eta_min
         self.max_epochs = opt.max_epochs
         self.log_dir = opt.log_dir
+        self.db = db
+        self.run_id = run_id
 
         self.model = model.to(self.device)  # Send model to device
         self.train_loader = train_loader
@@ -197,20 +201,24 @@ class Trainer:
                 val_metrics = {}
                 val_acc = 0.0
             self._save_snapshot(epoch)
-            history.append(
-                {
-                    "epoch": epoch,
-                    "train_loss": train_metrics["loss"],
-                    "train_ap": train_metrics["ap"],
-                    "train_iou": train_metrics["iou"],
-                    "train_dice": train_metrics["dice"],
-                    "val_loss": val_metrics.get("loss"),
-                    "val_ap": val_metrics.get("ap"),
-                    "val_iou": val_metrics.get("iou"),
-                    "val_dice": val_metrics.get("dice"),
-                    "lr": train_metrics["lr"],
-                }
-            )
+            row = {
+                "epoch": epoch,
+                "train_loss": train_metrics["loss"],
+                "train_ap": train_metrics["ap"],
+                "train_iou": train_metrics["iou"],
+                "train_dice": train_metrics["dice"],
+                "val_loss": val_metrics.get("loss"),
+                "val_ap": val_metrics.get("ap"),
+                "val_iou": val_metrics.get("iou"),
+                "val_dice": val_metrics.get("dice"),
+                "lr": train_metrics["lr"],
+            }
+            history.append(row)
+            if self.db is not None and self.run_id is not None:
+                try:
+                    self.db.upsert_epoch_metric(self.run_id, epoch, row)
+                except Exception:
+                    pass
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc

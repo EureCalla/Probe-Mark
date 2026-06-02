@@ -98,6 +98,7 @@ class DBManager:
                     lr REAL,
                     status TEXT NOT NULL DEFAULT 'running',
                     val_metric REAL,
+                    duration_seconds REAL,
                     created_at TEXT DEFAULT (datetime('now','localtime')),
                     updated_at TEXT DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (dataset_id) REFERENCES datasets(id),
@@ -179,6 +180,7 @@ class DBManager:
                 """
             )
             self._ensure_prediction_outputs_schema(conn)
+            self._ensure_training_runs_schema(conn)
 
     def _ensure_prediction_outputs_schema(self, conn):
         columns = {
@@ -187,6 +189,14 @@ class DBManager:
         }
         if "overlay_path" not in columns:
             conn.execute("ALTER TABLE prediction_outputs ADD COLUMN overlay_path TEXT")
+
+    def _ensure_training_runs_schema(self, conn):
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()
+        }
+        if "duration_seconds" not in columns:
+            conn.execute("ALTER TABLE training_runs ADD COLUMN duration_seconds REAL")
 
     @staticmethod
     def _dict(row):
@@ -499,7 +509,7 @@ class DBManager:
             )
         return cur.lastrowid
 
-    def update_training_run(self, run_id, status=None, val_metric=None):
+    def update_training_run(self, run_id, status=None, val_metric=None, duration_seconds=None):
         sets, params = [], []
         if status is not None:
             sets.append("status = ?")
@@ -507,6 +517,9 @@ class DBManager:
         if val_metric is not None:
             sets.append("val_metric = ?")
             params.append(val_metric)
+        if duration_seconds is not None:
+            sets.append("duration_seconds = ?")
+            params.append(float(duration_seconds))
         if not sets:
             return
         params.append(run_id)
@@ -534,6 +547,19 @@ class DBManager:
                 ],
             )
 
+    def get_training_run_params(self, run_id):
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT param_name, param_value
+                FROM training_run_params
+                WHERE run_id = ?
+                ORDER BY param_name ASC
+                """,
+                (run_id,),
+            ).fetchall()
+        return {row["param_name"]: row["param_value"] for row in rows}
+
     def replace_epoch_metrics(self, run_id, metrics):
         with self._connect() as conn:
             conn.execute("DELETE FROM training_epoch_metrics WHERE run_id = ?", (run_id,))
@@ -547,6 +573,44 @@ class DBManager:
                      :val_loss, :val_ap, :val_iou, :val_dice, :lr)
                 """,
                 [dict(row, run_id=run_id) for row in metrics],
+            )
+
+    def upsert_epoch_metric(self, run_id, epoch, metrics):
+        """Insert or replace one epoch row; for live training progress."""
+        row = {
+            "run_id": run_id,
+            "epoch": int(epoch),
+            "train_loss": metrics.get("train_loss"),
+            "train_ap": metrics.get("train_ap"),
+            "train_iou": metrics.get("train_iou"),
+            "train_dice": metrics.get("train_dice"),
+            "val_loss": metrics.get("val_loss"),
+            "val_ap": metrics.get("val_ap"),
+            "val_iou": metrics.get("val_iou"),
+            "val_dice": metrics.get("val_dice"),
+            "lr": metrics.get("lr"),
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO training_epoch_metrics
+                    (run_id, epoch, train_loss, train_ap, train_iou, train_dice,
+                     val_loss, val_ap, val_iou, val_dice, lr)
+                VALUES
+                    (:run_id, :epoch, :train_loss, :train_ap, :train_iou, :train_dice,
+                     :val_loss, :val_ap, :val_iou, :val_dice, :lr)
+                ON CONFLICT(run_id, epoch) DO UPDATE SET
+                    train_loss = excluded.train_loss,
+                    train_ap   = excluded.train_ap,
+                    train_iou  = excluded.train_iou,
+                    train_dice = excluded.train_dice,
+                    val_loss   = excluded.val_loss,
+                    val_ap     = excluded.val_ap,
+                    val_iou    = excluded.val_iou,
+                    val_dice   = excluded.val_dice,
+                    lr         = excluded.lr
+                """,
+                row,
             )
 
     def insert_test_metrics(self, run_id, split_id, metrics):
@@ -567,6 +631,20 @@ class DBManager:
                     metrics.get("test_ap"),
                 ),
             )
+
+    def list_test_metrics(self, run_id):
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_id, split_id, n_samples,
+                       test_loss, test_iou, test_dice, test_ap, created_at
+                FROM training_test_metrics
+                WHERE run_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def insert_model(self, run_id, model_dir, best_model_path=None, snapshot_path=None, opt_path=None):
         model_dir = os.path.abspath(os.fspath(model_dir))

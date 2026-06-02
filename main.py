@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import re
 import sys
@@ -731,14 +732,35 @@ def open_train_dialog(parent, status_var):
             plot_status_var.set("訓練失敗")
         else:
             result = state["result"]
-            text = str(result) if result is not None else "完成"
+            duration_text = None
+            if isinstance(result, dict):
+                run_id_done = result.get("run_id", state["current_run_id"])
+                model_id_done = result.get("model_id")
+                duration = result.get("duration_seconds")
+                if duration is not None:
+                    hh, rem = divmod(int(duration), 3600)
+                    mm, ss = divmod(rem, 60)
+                    duration_text = f"{hh}:{mm:02d}:{ss:02d}"
+                text = (
+                    f"run_id={run_id_done}, model_id={model_id_done}, "
+                    f"耗時 {duration_text or '—'}"
+                )
+            else:
+                text = str(result) if result is not None else "完成"
             logger.info("模型訓練完成：%s", text)
             messagebox.showinfo("模型訓練完成", text, parent=dialog)
             status_var.set("模型訓練完成")
             run_id = state["current_run_id"]
-            plot_status_var.set(
-                f"訓練完成（run #{run_id}）" if run_id else "訓練完成"
-            )
+            if duration_text:
+                plot_status_var.set(
+                    f"訓練完成（run #{run_id}，耗時 {duration_text}）"
+                    if run_id
+                    else f"訓練完成（耗時 {duration_text}）"
+                )
+            else:
+                plot_status_var.set(
+                    f"訓練完成（run #{run_id}）" if run_id else "訓練完成"
+                )
 
     def on_close():
         if state["thread"] is not None and state["thread"].is_alive():
@@ -762,7 +784,8 @@ def open_train_dialog(parent, status_var):
 def open_predict_dialog(parent, status_var):
     dialog = tk.Toplevel(parent)
     dialog.title("模型預測")
-    dialog.geometry("660x260")
+    dialog.geometry("980x760")
+    dialog.minsize(860, 640)
     dialog.transient(parent)
     dialog.grab_set()
 
@@ -774,9 +797,12 @@ def open_predict_dialog(parent, status_var):
 
     body = ttk.Frame(dialog, padding=12)
     body.pack(fill=tk.BOTH, expand=True)
+    body.columnconfigure(1, weight=1)
+    body.rowconfigure(4, weight=1)
     ttk.Label(body, text="Model").grid(row=0, column=0, sticky="e", pady=4, padx=4)
-    ttk.Combobox(body, textvariable=model_var, values=labels, state="readonly", width=52).grid(
-        row=0, column=1, columnspan=3, sticky="w", pady=4
+    model_combo = ttk.Combobox(body, textvariable=model_var, values=labels, state="readonly", width=52)
+    model_combo.grid(
+        row=0, column=1, columnspan=3, sticky="ew", pady=4
     )
     ttk.Label(body, text="Input").grid(row=1, column=0, sticky="e", pady=4, padx=4)
     ttk.Entry(body, textvariable=input_var, width=46).grid(row=1, column=1, sticky="w")
@@ -796,7 +822,92 @@ def open_predict_dialog(parent, status_var):
     ttk.Label(body, text="gpu_id").grid(row=3, column=0, sticky="e", pady=4, padx=4)
     ttk.Entry(body, textvariable=gpu_var, width=10).grid(row=3, column=1, sticky="w")
     if not labels:
-        ttk.Label(body, text="尚無模型，請先執行模型訓練").grid(row=4, column=1, sticky="w")
+        ttk.Label(body, text="尚無模型，請先執行模型訓練").grid(row=5, column=1, sticky="w")
+
+    metrics_frame = ttk.LabelFrame(body, text="Training Metrics", padding=8)
+    metrics_frame.grid(row=4, column=0, columnspan=4, sticky="nsew", pady=(10, 0))
+    metrics_frame.rowconfigure(0, weight=1)
+    metrics_frame.columnconfigure(0, weight=1)
+    metric_status_var = tk.StringVar(value="")
+    ttk.Label(
+        metrics_frame,
+        textvariable=metric_status_var,
+        foreground="#444",
+        justify=tk.LEFT,
+        wraplength=900,
+    ).grid(
+        row=1, column=0, sticky="w", pady=(6, 0)
+    )
+
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    metric_fig = Figure(figsize=(8.4, 4.0), dpi=90)
+    metric_ax_loss = metric_fig.add_subplot(1, 2, 1)
+    metric_ax_iou = metric_fig.add_subplot(1, 2, 2)
+
+    def init_metric_axes(message=None):
+        metric_ax_loss.clear()
+        metric_ax_loss.set_title("Loss / epoch")
+        metric_ax_loss.set_xlabel("epoch")
+        metric_ax_loss.set_ylabel("loss")
+        metric_ax_loss.grid(True, alpha=0.3)
+        metric_ax_iou.clear()
+        metric_ax_iou.set_title("IoU & Dice / epoch")
+        metric_ax_iou.set_xlabel("epoch")
+        metric_ax_iou.set_ylabel("score")
+        metric_ax_iou.grid(True, alpha=0.3)
+        if message:
+            metric_ax_loss.text(0.5, 0.5, message, transform=metric_ax_loss.transAxes, ha="center", va="center")
+            metric_ax_iou.text(0.5, 0.5, message, transform=metric_ax_iou.transAxes, ha="center", va="center")
+        metric_fig.tight_layout()
+
+    init_metric_axes("Select Model")
+    metric_canvas = FigureCanvasTkAgg(metric_fig, master=metrics_frame)
+    metric_canvas.draw()
+    metric_canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+    def refresh_model_metrics(*_):
+        model_id = mapping.get(model_var.get())
+        if model_id is None:
+            init_metric_axes("No model")
+            metric_status_var.set("")
+            metric_canvas.draw_idle()
+            return
+        from database import DBManager
+
+        db = DBManager()
+        db.init_db()
+        model = db.get_model(model_id)
+        if not model:
+            init_metric_axes("Model not found")
+            metric_status_var.set("")
+            metric_canvas.draw_idle()
+            return
+        epoch_rows = db.list_epoch_metrics(model["run_id"])
+        if not epoch_rows:
+            init_metric_axes("No epoch metrics")
+            metric_status_var.set(f"model#{model_id} / run#{model['run_id']} 沒有 epoch metrics 紀錄")
+            metric_canvas.draw_idle()
+            return
+
+        epochs = [row["epoch"] for row in epoch_rows]
+        init_metric_axes()
+        metric_ax_loss.plot(epochs, [row["train_loss"] for row in epoch_rows], "-o", label="train")
+        metric_ax_loss.plot(epochs, [row["val_loss"] for row in epoch_rows], "-o", label="validation")
+        metric_ax_loss.legend(loc="best")
+        metric_ax_iou.plot(epochs, [row["train_iou"] for row in epoch_rows], "-o", label="train")
+        metric_ax_iou.plot(epochs, [row["val_iou"] for row in epoch_rows], "-o", label="validation")
+        metric_ax_iou.legend(loc="best")
+
+        val_ious = [row["val_iou"] for row in epoch_rows if row["val_iou"] is not None]
+        best_val_iou = max(val_ious) if val_ious else None
+        suffix = f"，best validation IoU={best_val_iou:.4f}" if best_val_iou is not None else ""
+        metric_status_var.set(f"model#{model_id} / run#{model['run_id']}，epochs={len(epoch_rows)}{suffix}")
+        metric_canvas.draw_idle()
+
+    model_combo.bind("<<ComboboxSelected>>", refresh_model_metrics)
+    refresh_model_metrics()
 
     def execute():
         model_id = mapping.get(model_var.get())
