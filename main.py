@@ -328,7 +328,8 @@ def model_options():
 def open_train_dialog(parent, status_var):
     dialog = tk.Toplevel(parent)
     dialog.title("模型訓練")
-    dialog.geometry("900x680")
+    dialog.geometry("1240x820")
+    dialog.minsize(1100, 720)
     dialog.transient(parent)
     dialog.grab_set()
 
@@ -354,7 +355,7 @@ def open_train_dialog(parent, status_var):
         ("num_workers", "Workers", "0", "DataLoader 背景讀圖程序數；Windows/Tk 介面建議先用 0。"),
         ("lr", "Learning rate", "0.0001", "Adam optimizer 學習率；太大可能不穩，太小會學得慢。"),
         ("eta_min", "最低 LR", "0.00001", "CosineAnnealingLR 的最低 learning rate。"),
-        ("gpu_id", "GPU ID", "0", "使用哪張 GPU；-1 表示 CPU。"),
+        ("gpu_id", "GPU ID", "-1", "使用哪張 GPU；-1 表示 CPU。"),
     ]
     fields = {key: tk.StringVar(value=default) for key, _label, default, _help in field_defs}
 
@@ -367,9 +368,20 @@ def open_train_dialog(parent, status_var):
     model_root_var.trace_add("write", update_model_path)
     update_model_path()
 
-    body = ttk.Frame(dialog, padding=12)
-    body.pack(fill=tk.BOTH, expand=True)
+    container = ttk.Frame(dialog)
+    container.pack(fill=tk.BOTH, expand=True)
+
+    body = ttk.Frame(container, padding=12)
+    body.pack(side=tk.LEFT, fill=tk.Y, expand=False)
     body.columnconfigure(2, weight=1)
+
+    plot_frame = ttk.LabelFrame(container, text="訓練即時曲線", padding=8)
+    plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(0, 12), pady=12)
+    plot_status_var = tk.StringVar(value="尚未開始訓練")
+    ttk.Label(plot_frame, textvariable=plot_status_var, foreground="#888").pack(anchor="w")
+    plot_canvas_holder = ttk.Frame(plot_frame)
+    plot_canvas_holder.pack(fill=tk.BOTH, expand=True)
+
     all_dataset_ids = [mapping[label] for label in labels]
 
     label_for = {dataset_id: label for label, dataset_id in mapping.items()}
@@ -538,6 +550,72 @@ def open_train_dialog(parent, status_var):
             ),
         ).grid(row=row, column=1, sticky="w", pady=3, padx=4)
 
+    # ─── matplotlib 圖表 ─────────────────────────────────────────────
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    fig = Figure(figsize=(5.2, 5.5), dpi=90)
+    ax_loss = fig.add_subplot(2, 1, 1)
+    ax_iou = fig.add_subplot(2, 1, 2)
+
+    def _init_plot_axes() -> None:
+        ax_loss.clear()
+        ax_loss.set_title("Loss")
+        ax_loss.set_xlabel("epoch")
+        ax_loss.set_ylabel("loss")
+        ax_loss.grid(True, alpha=0.3)
+        ax_iou.clear()
+        ax_iou.set_title("IoU")
+        ax_iou.set_xlabel("epoch")
+        ax_iou.set_ylabel("iou")
+        ax_iou.grid(True, alpha=0.3)
+        fig.tight_layout()
+
+    _init_plot_axes()
+    plot_canvas = FigureCanvasTkAgg(fig, master=plot_canvas_holder)
+    plot_canvas.draw()
+    plot_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def redraw_plot(epoch_rows: list[dict]) -> None:
+        if not epoch_rows:
+            return
+        epochs = [r["epoch"] for r in epoch_rows]
+        train_loss = [r["train_loss"] for r in epoch_rows]
+        val_loss = [r["val_loss"] for r in epoch_rows]
+        train_iou = [r["train_iou"] for r in epoch_rows]
+        val_iou = [r["val_iou"] for r in epoch_rows]
+        _init_plot_axes()
+        ax_loss.plot(epochs, train_loss, "-o", color="#1e6fba", label="train")
+        ax_loss.plot(epochs, val_loss, "-o", color="#c0392b", label="val")
+        ax_loss.legend(loc="best")
+        ax_iou.plot(epochs, train_iou, "-o", color="#1e6fba", label="train")
+        ax_iou.plot(epochs, val_iou, "-o", color="#27ae60", label="val")
+        ax_iou.legend(loc="best")
+        plot_canvas.draw_idle()
+
+    # ─── 控制狀態（thread + run_id 追蹤） ────────────────────────────
+    state = {
+        "thread": None,
+        "result": None,
+        "error": None,
+        "prev_max_run_id": None,
+        "current_run_id": None,
+    }
+
+    def _set_inputs_state(state_value: str) -> None:
+        """Toggle all input widgets in body recursively (Entry / Listbox / Button / Combobox)."""
+        def walk(widget):
+            for child in widget.winfo_children():
+                cls = child.__class__.__name__
+                if cls in ("Entry", "TEntry", "Combobox", "TCombobox", "Listbox",
+                           "Button", "TButton", "Checkbutton", "TCheckbutton"):
+                    try:
+                        child.configure(state=state_value)
+                    except tk.TclError:
+                        pass
+                walk(child)
+        walk(body)
+
     def execute():
         train_dataset_ids = selected_train_dataset_ids()
         validation_dataset_ids = selected_validation_dataset_ids()
@@ -562,34 +640,123 @@ def open_train_dialog(parent, status_var):
             messagebox.showwarning("模型訓練", "模型根目錄不可空白", parent=dialog)
             return
 
-        def task():
-            from train_module import Trainer
+        from database import DBManager
+        db = DBManager()
+        db.init_db()
+        state["prev_max_run_id"] = db.get_latest_training_run_id() or 0
+        state["current_run_id"] = None
+        state["result"] = None
+        state["error"] = None
 
-            return Trainer(
-                dataset_ids=train_dataset_ids,
-                validation_dataset_ids=validation_dataset_ids,
-                split_name=fields["split_name"].get().strip() or "default",
-                run_name=fields["run_name"].get().strip() or None,
-                test_ratio=test_ratio,
-                encoder_name=fields["encoder_name"].get().strip(),
-                encoder_weights=fields["encoder_weights"].get().strip() or None,
-                decoder_name=fields["decoder_name"].get().strip(),
-                max_epochs=int(fields["max_epochs"].get()),
-                batch_size=int(fields["batch_size"].get()),
-                num_workers=int(fields["num_workers"].get()),
-                lr=float(fields["lr"].get()),
-                eta_min=float(fields["eta_min"].get()),
-                gpu_id=int(fields["gpu_id"].get()),
-                model_output_root=model_output_root,
-            ).run()
+        def worker():
+            try:
+                from train_module import Trainer
+                logger.info("模型訓練 開始…")
+                state["result"] = Trainer(
+                    dataset_ids=train_dataset_ids,
+                    validation_dataset_ids=validation_dataset_ids,
+                    split_name=fields["split_name"].get().strip() or "default",
+                    run_name=fields["run_name"].get().strip() or None,
+                    test_ratio=test_ratio,
+                    encoder_name=fields["encoder_name"].get().strip(),
+                    encoder_weights=fields["encoder_weights"].get().strip() or None,
+                    decoder_name=fields["decoder_name"].get().strip(),
+                    max_epochs=int(fields["max_epochs"].get()),
+                    batch_size=int(fields["batch_size"].get()),
+                    num_workers=int(fields["num_workers"].get()),
+                    lr=float(fields["lr"].get()),
+                    eta_min=float(fields["eta_min"].get()),
+                    gpu_id=int(fields["gpu_id"].get()),
+                    model_output_root=model_output_root,
+                ).run()
+            except Exception as exc:
+                state["error"] = exc
 
-        run_background(status_var, "模型訓練", task)
+        _set_inputs_state("disabled")
+        start_btn.configure(state="disabled")
+        close_btn.configure(text="關閉（訓練中無法關閉）", state="disabled")
+        plot_status_var.set("訓練啟動中…")
+        status_var.set("執行中...")
+
+        t = threading.Thread(target=worker, daemon=True)
+        state["thread"] = t
+        t.start()
+        dialog.after(1000, _poll_training)
+
+    def _poll_training() -> None:
+        # 找出本次 run_id
+        if state["current_run_id"] is None:
+            try:
+                from database import DBManager
+                db = DBManager()
+                with db._connect() as conn:
+                    row = conn.execute(
+                        "SELECT id FROM training_runs WHERE id > ? ORDER BY id ASC LIMIT 1",
+                        (state["prev_max_run_id"],),
+                    ).fetchone()
+                if row:
+                    state["current_run_id"] = row[0]
+                    plot_status_var.set(f"訓練中（run #{row[0]}）— 每秒更新")
+            except Exception as exc:
+                logger.warning("輪詢 training_runs 失敗：%s", exc)
+
+        # 取 epoch 指標
+        if state["current_run_id"] is not None:
+            try:
+                from database import DBManager
+                db = DBManager()
+                rows = db.list_epoch_metrics(state["current_run_id"])
+                if rows:
+                    redraw_plot(rows)
+                    plot_status_var.set(
+                        f"訓練中（run #{state['current_run_id']}）— 已完成 {len(rows)} epochs"
+                    )
+            except Exception as exc:
+                logger.warning("讀 epoch metrics 失敗：%s", exc)
+
+        if state["thread"] is not None and state["thread"].is_alive():
+            dialog.after(1000, _poll_training)
+        else:
+            _finalize_training()
+
+    def _finalize_training() -> None:
+        _set_inputs_state("normal")
+        start_btn.configure(state="normal")
+        close_btn.configure(text="關閉", state="normal")
+        if state["error"] is not None:
+            exc = state["error"]
+            logger.exception("模型訓練失敗：%s: %s", type(exc).__name__, exc)
+            messagebox.showerror("模型訓練失敗", f"{type(exc).__name__}: {exc}", parent=dialog)
+            status_var.set("模型訓練失敗")
+            plot_status_var.set("訓練失敗")
+        else:
+            result = state["result"]
+            text = str(result) if result is not None else "完成"
+            logger.info("模型訓練完成：%s", text)
+            messagebox.showinfo("模型訓練完成", text, parent=dialog)
+            status_var.set("模型訓練完成")
+            run_id = state["current_run_id"]
+            plot_status_var.set(
+                f"訓練完成（run #{run_id}）" if run_id else "訓練完成"
+            )
+
+    def on_close():
+        if state["thread"] is not None and state["thread"].is_alive():
+            messagebox.showinfo(
+                "模型訓練",
+                "訓練進行中，請等待完成（暫停功能將於後續版本提供）",
+                parent=dialog,
+            )
+            return
         dialog.destroy()
 
     actions = ttk.Frame(dialog, padding=12)
     actions.pack(fill=tk.X)
-    ttk.Button(actions, text="開始訓練", command=execute).pack(side=tk.RIGHT)
-    ttk.Button(actions, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=6)
+    start_btn = ttk.Button(actions, text="開始訓練", command=execute)
+    start_btn.pack(side=tk.RIGHT)
+    close_btn = ttk.Button(actions, text="關閉", command=on_close)
+    close_btn.pack(side=tk.RIGHT, padx=6)
+    dialog.protocol("WM_DELETE_WINDOW", on_close)
 
 
 def open_predict_dialog(parent, status_var):
@@ -603,7 +770,7 @@ def open_predict_dialog(parent, status_var):
     model_var = tk.StringVar(value=labels[0] if labels else "")
     input_var = tk.StringVar()
     output_var = tk.StringVar()
-    gpu_var = tk.StringVar(value="0")
+    gpu_var = tk.StringVar(value="-1")
 
     body = ttk.Frame(dialog, padding=12)
     body.pack(fill=tk.BOTH, expand=True)

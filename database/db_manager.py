@@ -591,6 +591,27 @@ class DBManager:
             row = conn.execute("SELECT * FROM training_runs WHERE id = ?", (run_id,)).fetchone()
         return self._dict(row)
 
+    def get_latest_training_run_id(self):
+        """Return the max id of training_runs, or None if empty."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT MAX(id) FROM training_runs").fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def list_epoch_metrics(self, run_id):
+        """Return all epoch metrics for a run, ordered by epoch."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT epoch, train_loss, train_iou, train_dice,
+                       val_loss, val_iou, val_dice, lr
+                FROM training_epoch_metrics
+                WHERE run_id = ?
+                ORDER BY epoch ASC
+                """,
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_model(self, model_id):
         with self._connect() as conn:
             row = conn.execute(
