@@ -21,7 +21,7 @@ class Predictor:
         model_id,
         input_path,
         output_dir=None,
-        gpu_id=0,
+        gpu_id=-1,
         db=None,
     ):
         self.model_id = int(model_id)
@@ -91,6 +91,7 @@ class Predictor:
                     image_path=image_path,
                     mask_path=result["mask_path"],
                     compare_path=result["compare_path"],
+                    overlay_path=result["overlay_path"],
                 )
                 outputs.append(dict(result, image_path=image_path))
             self.db.update_prediction_run(prediction_run_id, "done")

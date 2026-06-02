@@ -63,6 +63,23 @@ class Predictor:
         plt.close(fig)
         return out_path
 
+    def _mask_to_original_size(self, mask_np: np.ndarray, original_pil: Image.Image) -> Image.Image:
+        mask = Image.fromarray(mask_np, mode="L")
+        padded_size = (original_pil.width, original_pil.height + 258)
+        resample_nearest = getattr(Image.Resampling, "NEAREST", Image.NEAREST)
+        mask = mask.resize(padded_size, resample_nearest)
+        return mask.crop((0, 129, original_pil.width, 129 + original_pil.height))
+
+    def _save_overlay(self, original_pil: Image.Image, mask_np: np.ndarray, stem: str) -> str:
+        out_path = os.path.join(self.output_dir, f"{stem}_overlay.png")
+        original_rgba = original_pil.convert("RGBA")
+        mask = self._mask_to_original_size(mask_np, original_pil)
+        alpha = mask.point(lambda value: 96 if value > 0 else 0)
+        overlay = Image.new("RGBA", original_rgba.size, (0, 255, 0, 0))
+        overlay.putalpha(alpha)
+        Image.alpha_composite(original_rgba, overlay).convert("RGB").save(out_path)
+        return out_path
+
     def predict(self, image_path: str) -> dict:
         """Run inference on a single image, save mask PNG and comparison figure."""
         stem = Path(image_path).stem
@@ -75,9 +92,11 @@ class Predictor:
         mask_np = self._postprocess(logits)
 
         mask_path = self._save_mask(mask_np, stem)
+        overlay_path = self._save_overlay(original_pil, mask_np, stem)
         compare_path = self._save_compare(original_pil, mask_np, stem)
 
         print(f"Mask saved:    {mask_path}")
+        print(f"Overlay saved: {overlay_path}")
         print(f"Compare saved: {compare_path}")
 
-        return {"mask_path": mask_path, "compare_path": compare_path}
+        return {"mask_path": mask_path, "overlay_path": overlay_path, "compare_path": compare_path}

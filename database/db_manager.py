@@ -171,12 +171,22 @@ class DBManager:
                     prediction_run_id INTEGER NOT NULL,
                     image_path TEXT NOT NULL,
                     mask_path TEXT NOT NULL,
+                    overlay_path TEXT,
                     compare_path TEXT NOT NULL,
                     created_at TEXT DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (prediction_run_id) REFERENCES prediction_runs(id) ON DELETE CASCADE
                 );
                 """
             )
+            self._ensure_prediction_outputs_schema(conn)
+
+    def _ensure_prediction_outputs_schema(self, conn):
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(prediction_outputs)").fetchall()
+        }
+        if "overlay_path" not in columns:
+            conn.execute("ALTER TABLE prediction_outputs ADD COLUMN overlay_path TEXT")
 
     @staticmethod
     def _dict(row):
@@ -650,21 +660,30 @@ class DBManager:
                 (status, prediction_run_id),
             )
 
-    def insert_prediction_output(self, prediction_run_id, image_path, mask_path, compare_path):
+    def insert_prediction_output(
+        self,
+        prediction_run_id,
+        image_path,
+        mask_path,
+        compare_path,
+        overlay_path=None,
+    ):
         image_path = os.fspath(image_path)
         mask_path = os.fspath(mask_path)
         compare_path = os.fspath(compare_path)
+        overlay_path = os.fspath(overlay_path) if overlay_path else None
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO prediction_outputs
-                    (prediction_run_id, image_path, mask_path, compare_path)
-                VALUES (?, ?, ?, ?)
+                    (prediction_run_id, image_path, mask_path, overlay_path, compare_path)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     prediction_run_id,
                     os.path.abspath(image_path),
                     os.path.abspath(mask_path),
+                    os.path.abspath(overlay_path) if overlay_path else None,
                     os.path.abspath(compare_path),
                 ),
             )
