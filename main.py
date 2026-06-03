@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from zoneinfo import ZoneInfo
 
+from introduce import Introduce
 from mpivr20_cms import get_clean_output_dir, get_output_root_dir
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -941,16 +942,31 @@ def open_predict_dialog(parent, status_var):
 def main():
     from gui.log_panel import install_log_panel
 
+    app_info = Introduce()
+
     root = tk.Tk()
-    root.title("Probe-Mark")
+    root.title(f"{app_info.program} {app_info.version}")
     root.geometry("860x600")
     root.minsize(720, 480)
 
     header = ttk.Frame(root, padding=(14, 10, 14, 4))
     header.pack(fill=tk.X)
-    ttk.Label(header, text="Probe-Mark", font=("Arial", 16, "bold")).pack(side=tk.LEFT)
-    ttk.Label(header, text="  探針痕跡影像辨識", foreground="#666").pack(
+    title_row = ttk.Frame(header)
+    title_row.pack(fill=tk.X)
+    ttk.Label(
+        title_row,
+        text=f"{app_info.program} {app_info.version}",
+        font=("Arial", 16, "bold"),
+    ).pack(side=tk.LEFT)
+    ttk.Label(title_row, text="  探針痕跡影像辨識", foreground="#666").pack(
         side=tk.LEFT, padx=(4, 0)
+    )
+
+    logger.info(
+        "%s %s, developer=%s",
+        app_info.program,
+        app_info.version,
+        app_info.developer,
     )
 
     status_var = tk.StringVar(value="待命")
@@ -981,7 +997,23 @@ def main():
     ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
     log_panel = install_log_panel(root, logger_name="probe_mark")
-    log_panel.pack(fill=tk.BOTH, expand=True, padx=14, pady=(8, 12))
+    log_panel.pack(fill=tk.BOTH, expand=True, padx=14, pady=(8, 6))
+
+    footer = ttk.Frame(root, padding=(14, 0, 14, 10))
+    footer.pack(fill=tk.X, side=tk.BOTTOM)
+    ttk.Separator(footer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 6))
+    ttk.Label(
+        footer,
+        text=f"設計者：{app_info.developer}",
+        foreground="#555",
+    ).pack(anchor="w")
+    ttk.Label(
+        footer,
+        text=app_info.copyright_notice,
+        foreground="#777",
+        wraplength=820,
+        justify=tk.LEFT,
+    ).pack(fill=tk.X, pady=(2, 0))
 
     logger.info("Probe-Mark 啟動完成，等待操作")
     root.mainloop()

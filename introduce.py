@@ -1,7 +1,7 @@
 class Introduce:
     def __init__(self):
         self.program = "Probe-Mark"
-        self.version = "v2.20"
+        self.version = "v2.21"
         self.developer = "Calla.Lin #6381"
         self.program_intro = (
             "探針痕跡影像辨識系統，使用 segmentation_models.pytorch（ResNet+FPN 等）"
@@ -10,4 +10,8 @@ class Introduce:
         self.program_notice = (
             "需要 PyTorch 環境；訓練資料請放於 data/ 目錄；"
             "執行前確認 requirements.txt 已安裝完畢。"
+        )
+        self.copyright_notice = (
+            "© 2026 上述開發者保留所有權利。本軟體及其文件之著作權受法律保護，"
+            "未經授權不得擅自重製、修改、散布或作商業利用。"
         )
