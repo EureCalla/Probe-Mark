@@ -1,7 +1,7 @@
 class Introduce:
     def __init__(self):
         self.program = "Probe-Mark"
-        self.version = "v2.21"
+        self.version = "v2.22"
         self.developer = "Calla.Lin #6381"
         self.program_intro = (
             "探針痕跡影像辨識系統，使用 segmentation_models.pytorch（ResNet+FPN 等）"

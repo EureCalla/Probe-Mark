@@ -34,13 +34,12 @@ class Trainer:
         self,
         dataset_id=None,
         dataset_ids=None,
-        validation_dataset_ids=None,
+        test_dataset_ids=None,
         split_id=None,
         split_name="default",
         run_name=None,
         seed=42,
         val_ratio=0.2,
-        test_ratio=0.2,
         encoder_name="resnet18",
         encoder_weights="imagenet",
         decoder_name="FPN",
@@ -56,10 +55,10 @@ class Trainer:
         if dataset_ids is None:
             dataset_ids = [dataset_id]
         self.train_dataset_ids = [int(item) for item in dataset_ids if item is not None]
-        self.validation_dataset_ids = [
-            int(item) for item in (validation_dataset_ids or []) if item is not None
+        self.test_dataset_ids = [
+            int(item) for item in (test_dataset_ids or []) if item is not None
         ]
-        self.dataset_ids = self.train_dataset_ids + self.validation_dataset_ids
+        self.dataset_ids = self.train_dataset_ids + self.test_dataset_ids
         if not self.dataset_ids:
             raise ValueError("至少需要選擇一個 dataset")
         self.dataset_id = self.train_dataset_ids[0] if self.train_dataset_ids else self.dataset_ids[0]
@@ -68,7 +67,6 @@ class Trainer:
         self.run_name = run_name or self.default_run_name()
         self.seed = int(seed)
         self.val_ratio = float(val_ratio)
-        self.test_ratio = float(test_ratio)
         self.encoder_name = encoder_name
         self.encoder_weights = encoder_weights
         self.decoder_name = decoder_name
@@ -86,20 +84,20 @@ class Trainer:
             return self.split_id
 
         train_pool = self.list_samples_for_datasets(self.train_dataset_ids)
-        val_samples = self.list_samples_for_datasets(self.validation_dataset_ids)
+        test_samples = self.list_samples_for_datasets(self.test_dataset_ids)
         if len(train_pool) < 2:
-            raise ValueError("train pool 至少需要 2 個有效 sample 才能切 train/test")
-        if not val_samples:
-            raise ValueError("validation datasets 至少需要 1 個有效 sample")
+            raise ValueError("train pool 至少需要 2 個有效 sample 才能切 train/val")
+        if not test_samples:
+            raise ValueError("test datasets 至少需要 1 個有效 sample")
 
-        train_samples, test_samples = train_test_split(
+        train_samples, val_samples = train_test_split(
             train_pool,
-            test_size=self.test_ratio,
+            test_size=self.val_ratio,
             random_state=self.seed,
             shuffle=True,
         )
-        if not train_samples or not test_samples:
-            raise ValueError("train/test split 必須同時包含 train 與 test samples")
+        if not train_samples or not val_samples:
+            raise ValueError("train/val split 必須同時包含 train 與 val samples")
 
         total_samples = len(train_samples) + len(val_samples) + len(test_samples)
         train_ratio = len(train_samples) / total_samples
@@ -121,8 +119,8 @@ class Trainer:
         )
 
     def default_run_name(self):
-        if self.validation_dataset_ids:
-            return f"train_{len(self.train_dataset_ids)}_val_{len(self.validation_dataset_ids)}"
+        if self.test_dataset_ids:
+            return f"train_{len(self.train_dataset_ids)}_test_{len(self.test_dataset_ids)}"
         if len(self.train_dataset_ids) == 1:
             return f"dataset_{self.dataset_id}"
         return f"datasets_{len(self.train_dataset_ids)}"
@@ -290,10 +288,10 @@ class Trainer:
     def training_params(self):
         return {
             "train_dataset_ids": self.train_dataset_ids,
-            "validation_dataset_ids": self.validation_dataset_ids,
+            "test_dataset_ids": self.test_dataset_ids,
             "split_name": self.split_name,
             "seed": self.seed,
-            "test_ratio": self.test_ratio,
+            "val_ratio": self.val_ratio,
             "run_name": self.run_name,
             "encoder_name": self.encoder_name,
             "encoder_weights": self.encoder_weights,
