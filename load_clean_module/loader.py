@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import cv2
@@ -15,6 +16,16 @@ SHEET_LABEL = "體積面積量測"
 TARGET_COL = 2
 DEFAULT_MAX_GROUND_TRUTH_RATIO = 0.5
 DEFAULT_MIN_GROUND_TRUTH_PIXELS = 30
+STORAGE_LAYOUT_TYPED_FLAT = "typed_flat_v1"
+OUTPUT_TYPES = ("image", "label", "ground_truth", "mask_view")
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
 
 class GroundTruthAreaError(ValueError):
@@ -111,6 +122,19 @@ def violation_message(violation: dict) -> str:
     return "ground_truth 不符合清洗規則"
 
 
+def safe_filename_part(value: object) -> str:
+    """Return a Windows-safe filename part without changing readable text."""
+    text = str(value).strip()
+    text = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]+', "_", text)
+    text = re.sub(r"\s+", "_", text)
+    text = text.strip(" ._")
+    if not text:
+        text = "unnamed"
+    if text.upper() in WINDOWS_RESERVED_NAMES:
+        text = f"_{text}"
+    return text
+
+
 class LoadCleanService:
     def __init__(
         self,
@@ -202,8 +226,11 @@ class LoadCleanService:
             raise FileNotFoundError(f"檔案不存在：{excel_path}")
 
         source_id = self.db.upsert_source_excel(excel_path, output_name)
-        out_dir = os.path.abspath(os.path.join(self.save_dir, output_name))
-        existing = self.db.get_dataset_for_excel_path(excel_path)
+        out_dir = os.path.abspath(self.save_dir)
+        existing = self.db.get_dataset_for_excel_path(
+            excel_path,
+            storage_layout=STORAGE_LAYOUT_TYPED_FLAT,
+        )
         if not self.force and self.db.cache_valid(existing):
             violations = self.validate_cached_ground_truth(existing)
             if violations:
@@ -215,6 +242,7 @@ class LoadCleanService:
             dataset_name=output_name,
             source_excel_id=source_id,
             processed_dir=out_dir,
+            storage_layout=STORAGE_LAYOUT_TYPED_FLAT,
             status="running",
         )
         try:
@@ -259,6 +287,14 @@ class LoadCleanService:
         samples = []
         area_violations = []
         Path(out_dir).mkdir(parents=True, exist_ok=True)
+        output_dirs = {
+            output_type: os.path.abspath(os.path.join(out_dir, output_type))
+            for output_type in OUTPUT_TYPES
+        }
+        for output_type_dir in output_dirs.values():
+            os.makedirs(output_type_dir, exist_ok=True)
+        excel_name = safe_filename_part(Path(excel_path).stem)
+        used_filenames = set()
         for sample_name, items in sorted(data.items()):
             if "image" not in items or "label" not in items:
                 print(f"  缺資料跳過：{sample_name}")
@@ -281,12 +317,16 @@ class LoadCleanService:
                 min_pixels=self.min_ground_truth_pixels,
             )
 
-            sample_dir = os.path.join(out_dir, str(sample_name))
-            os.makedirs(sample_dir, exist_ok=True)
-            image_path = os.path.abspath(os.path.join(sample_dir, "image.png"))
-            ground_truth_path = os.path.abspath(os.path.join(sample_dir, "ground_truth.png"))
-            mask_view_path = os.path.abspath(os.path.join(sample_dir, "mask_view.png"))
-            label_path = os.path.abspath(os.path.join(sample_dir, "label.png"))
+            filename = f"{excel_name}_{safe_filename_part(sample_name)}.png"
+            if filename in used_filenames:
+                raise ValueError(f"清洗輸出檔名重複，請檢查 Excel 欄位名稱：{filename}")
+            used_filenames.add(filename)
+            image_path = os.path.abspath(os.path.join(output_dirs["image"], filename))
+            ground_truth_path = os.path.abspath(
+                os.path.join(output_dirs["ground_truth"], filename)
+            )
+            mask_view_path = os.path.abspath(os.path.join(output_dirs["mask_view"], filename))
+            label_path = os.path.abspath(os.path.join(output_dirs["label"], filename))
 
             imwrite_unicode(image_path, image)
             imwrite_unicode(label_path, label)
@@ -306,6 +346,7 @@ class LoadCleanService:
                     "sample_name": str(sample_name),
                     "image_path": image_path,
                     "ground_truth_path": ground_truth_path,
+                    "label_path": label_path,
                     "mask_view_path": mask_view_path,
                     "width": int(width),
                     "height": int(height),

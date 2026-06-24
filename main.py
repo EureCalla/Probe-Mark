@@ -290,10 +290,14 @@ def open_clean_dialog(parent, status_var):
 
 def dataset_options():
     from database import DBManager
+    from load_clean_module import STORAGE_LAYOUT_TYPED_FLAT
 
     db = DBManager()
     db.init_db()
-    datasets = db.list_datasets(only_done=True)
+    datasets = db.list_datasets(
+        only_done=True,
+        storage_layout=STORAGE_LAYOUT_TYPED_FLAT,
+    )
     labels = []
     mapping = {}
     counts = {}

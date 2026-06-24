@@ -41,6 +41,7 @@ class DBManager:
                     dataset_name TEXT NOT NULL,
                     source_excel_id INTEGER NOT NULL,
                     processed_dir TEXT NOT NULL,
+                    storage_layout TEXT NOT NULL DEFAULT 'legacy_nested',
                     n_samples INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'running',
                     created_at TEXT DEFAULT (datetime('now','localtime')),
@@ -55,6 +56,7 @@ class DBManager:
                     sample_name TEXT NOT NULL,
                     image_path TEXT NOT NULL,
                     ground_truth_path TEXT NOT NULL,
+                    label_path TEXT,
                     mask_view_path TEXT,
                     width INTEGER,
                     height INTEGER,
@@ -181,6 +183,8 @@ class DBManager:
             )
             self._ensure_prediction_outputs_schema(conn)
             self._ensure_training_runs_schema(conn)
+            self._ensure_datasets_schema(conn)
+            self._ensure_samples_schema(conn)
 
     def _ensure_prediction_outputs_schema(self, conn):
         columns = {
@@ -197,6 +201,25 @@ class DBManager:
         }
         if "duration_seconds" not in columns:
             conn.execute("ALTER TABLE training_runs ADD COLUMN duration_seconds REAL")
+
+    def _ensure_datasets_schema(self, conn):
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(datasets)").fetchall()
+        }
+        if "storage_layout" not in columns:
+            conn.execute(
+                "ALTER TABLE datasets "
+                "ADD COLUMN storage_layout TEXT NOT NULL DEFAULT 'legacy_nested'"
+            )
+
+    def _ensure_samples_schema(self, conn):
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(samples)").fetchall()
+        }
+        if "label_path" not in columns:
+            conn.execute("ALTER TABLE samples ADD COLUMN label_path TEXT")
 
     @staticmethod
     def _dict(row):
@@ -245,22 +268,27 @@ class DBManager:
             )
         return cur.lastrowid
 
-    def get_dataset_for_excel_path(self, excel_path):
+    def get_dataset_for_excel_path(self, excel_path, storage_layout=None):
         path = os.path.abspath(excel_path)
+        params = [path]
+        layout_filter = ""
+        if storage_layout is not None:
+            layout_filter = " AND d.storage_layout = ?"
+            params.append(storage_layout)
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT d.*
                 FROM datasets d
                 JOIN source_excels s ON s.id = d.source_excel_id
-                WHERE s.original_path = ?
+                WHERE s.original_path = ?{layout_filter}
                 ORDER BY
                     CASE WHEN d.status = 'done' THEN 0 ELSE 1 END,
                     d.updated_at DESC,
                     d.id DESC
                 LIMIT 1
                 """,
-                (path,),
+                params,
             ).fetchone()
         return self._dict(row)
 
@@ -275,20 +303,28 @@ class DBManager:
             ).fetchone()
         return self._dict(row)
 
-    def upsert_dataset(self, dataset_name, source_excel_id, processed_dir, status="running"):
+    def upsert_dataset(
+        self,
+        dataset_name,
+        source_excel_id,
+        processed_dir,
+        status="running",
+        storage_layout="legacy_nested",
+    ):
         processed_dir = os.path.abspath(processed_dir)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO datasets
-                    (dataset_name, source_excel_id, processed_dir, status)
-                VALUES (?, ?, ?, ?)
+                    (dataset_name, source_excel_id, processed_dir, storage_layout, status)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(source_excel_id, dataset_name) DO UPDATE SET
                     processed_dir=excluded.processed_dir,
+                    storage_layout=excluded.storage_layout,
                     status=excluded.status,
                     updated_at=datetime('now','localtime')
                 """,
-                (dataset_name, source_excel_id, processed_dir, status),
+                (dataset_name, source_excel_id, processed_dir, storage_layout, status),
             )
             row = conn.execute(
                 """
@@ -310,15 +346,16 @@ class DBManager:
                 """
                 INSERT INTO samples
                     (dataset_id, sample_name, image_path, ground_truth_path,
-                     mask_view_path, width, height, status)
+                     label_path, mask_view_path, width, height, status)
                 VALUES
                     (:dataset_id, :sample_name, :image_path, :ground_truth_path,
-                     :mask_view_path, :width, :height, :status)
+                     :label_path, :mask_view_path, :width, :height, :status)
                 """,
                 [
                     dict(
                         sample,
                         dataset_id=dataset_id,
+                        label_path=sample.get("label_path"),
                         status=sample.get("status", "active"),
                     )
                     for sample in samples
@@ -345,16 +382,22 @@ class DBManager:
                 (dataset_id,),
             )
 
-    def list_datasets(self, only_done=True):
+    def list_datasets(self, only_done=True, storage_layout=None):
         sql = """
             SELECT d.*, s.original_path
             FROM datasets d
             JOIN source_excels s ON s.id = d.source_excel_id
         """
+        where = []
         params = []
         if only_done:
-            sql += " WHERE d.status = ?"
+            where.append("d.status = ?")
             params.append("done")
+        if storage_layout is not None:
+            where.append("d.storage_layout = ?")
+            params.append(storage_layout)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY d.updated_at DESC, d.id DESC"
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
