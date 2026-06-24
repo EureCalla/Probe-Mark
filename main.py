@@ -345,8 +345,8 @@ def open_train_dialog(parent, status_var):
     sample_summary_var = tk.StringVar(
         value=(
             "排除: 0 個；Train/Val pool 有效: 0 / 無效: 0；"
-            "Test 有效: 0 / 無效: 0\n"
-            "Test 比例: 0.0%；Validation 比例: 20.0%"
+            "Final Test 有效: 0 / 無效: 0\n"
+            "Final Test 比例: 0.0%；Validation 比例: 20.0%"
         )
     )
     field_defs = [
@@ -415,9 +415,9 @@ def open_train_dialog(parent, status_var):
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         return wrap, listbox
 
-    candidate_wrap, candidate_list = _build_dataset_listbox(dataset_frame, "可用資料集")
+    candidate_wrap, candidate_list = _build_dataset_listbox(dataset_frame, "Train/Val Pool")
     candidate_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-    test_wrap, dataset_list = _build_dataset_listbox(dataset_frame, "Test Dataset")
+    test_wrap, dataset_list = _build_dataset_listbox(dataset_frame, "Final Test Dataset")
     test_wrap.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
     candidate_actions = ttk.Frame(dataset_frame)
@@ -452,15 +452,15 @@ def open_train_dialog(parent, status_var):
         update_sample_summary()
 
     def selected_test_dataset_ids() -> list[int]:
-        """Return dataset ids selected as test datasets."""
+        """Return dataset ids selected as final test datasets."""
         return [d for d in visible_dataset_ids() if d in test_selected_ids]
 
     def selected_train_dataset_ids() -> list[int]:
-        """Return visible dataset ids that are not selected as test."""
+        """Return visible dataset ids that stay in the train/val pool."""
         return [d for d in visible_dataset_ids() if d not in test_selected_ids]
 
     def update_sample_summary(_event: tk.Event | None = None) -> None:
-        """Refresh sample counts for excluded, train/val pool and test dataset groups."""
+        """Refresh sample counts for excluded, train/val pool and final test groups."""
         train_ids = selected_train_dataset_ids()
         test_ids = selected_test_dataset_ids()
         train_pool_valid = sum(sample_counts[d]["active"] for d in train_ids)
@@ -476,8 +476,8 @@ def open_train_dialog(parent, status_var):
         sample_summary_var.set(
             f"排除: {len(excluded_ids)} 個；"
             f"Train/Val pool 有效: {train_pool_valid} / 無效: {train_pool_invalid}；"
-            f"Test 有效: {test_valid} / 無效: {test_invalid}\n"
-            f"Test 比例: {test_ratio:.1%}；Validation 比例: {val_ratio:.1%}"
+            f"Final Test 有效: {test_valid} / 無效: {test_invalid}\n"
+            f"Final Test 比例: {test_ratio:.1%}；Validation 比例: {val_ratio:.1%}"
         )
 
     def on_exclude() -> None:
@@ -485,7 +485,7 @@ def open_train_dialog(parent, status_var):
         picks = [visible[i] for i in candidate_list.curselection()]
         if not picks:
             messagebox.showwarning(
-                "排除", "請先在「可用資料集」中勾選要排除的項目", parent=dialog
+                "排除", "請先在「Train/Val Pool」中勾選要排除的項目", parent=dialog
             )
             return
         excluded_ids.update(picks)
@@ -515,10 +515,10 @@ def open_train_dialog(parent, status_var):
         width=3,
         command=lambda: messagebox.showinfo(
             "Dataset",
-            "左側「可用資料集」：勾選後按【排除選取】，項目會從兩邊清單消失；\n"
+            "左側「Train/Val Pool」：勾選後按【排除選取】，項目會從兩邊清單消失；\n"
             "按【復原全部】可把所有被排除的 dataset 拉回來。\n\n"
-            "右側「Test Dataset」：從可用資料集中勾選作為 final test（整包保留、不參與選模型）。\n"
-            "未排除且未選為 test 的 dataset 會作為 train/val pool，"
+            "右側「Final Test Dataset」：從 Train/Val Pool 中勾選作為 final test（整包保留、不參與選模型）。\n"
+            "未排除且未選為 final test 的 dataset 會作為 train/val pool，"
             "再依 Validation 比例切成 train 與 validation（每個 epoch 監看、挑最佳模型）。",
             parent=dialog,
         ),
@@ -627,7 +627,7 @@ def open_train_dialog(parent, status_var):
         test_dataset_ids = selected_test_dataset_ids()
         if not test_dataset_ids:
             messagebox.showwarning(
-                "模型訓練", "請先選擇至少一個 test dataset", parent=dialog
+                "模型訓練", "請先選擇至少一個 final test dataset", parent=dialog
             )
             return
         if not train_dataset_ids:
