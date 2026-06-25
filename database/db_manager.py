@@ -19,7 +19,8 @@ class DBManager:
         return conn
 
     def init_db(self):
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        if not self.db_path.startswith("\\\\"):
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -114,6 +115,11 @@ class DBManager:
                     best_model_path TEXT,
                     snapshot_path TEXT,
                     opt_path TEXT,
+                    parameter_count INTEGER,
+                    db_import_test_mean_iou REAL,
+                    db_import_test_n_samples INTEGER,
+                    db_import_test_prediction_run_id INTEGER,
+                    db_import_test_updated_at TEXT,
                     created_at TEXT DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (run_id) REFERENCES training_runs(id)
                 );
@@ -176,6 +182,9 @@ class DBManager:
                     mask_path TEXT NOT NULL,
                     overlay_path TEXT,
                     compare_path TEXT NOT NULL,
+                    iou REAL,
+                    status TEXT NOT NULL DEFAULT 'done',
+                    error_message TEXT,
                     created_at TEXT DEFAULT (datetime('now','localtime')),
                     FOREIGN KEY (prediction_run_id) REFERENCES prediction_runs(id) ON DELETE CASCADE
                 );
@@ -185,6 +194,7 @@ class DBManager:
             self._ensure_training_runs_schema(conn)
             self._ensure_datasets_schema(conn)
             self._ensure_samples_schema(conn)
+            self._ensure_models_schema(conn)
 
     def _ensure_prediction_outputs_schema(self, conn):
         columns = {
@@ -193,6 +203,31 @@ class DBManager:
         }
         if "overlay_path" not in columns:
             conn.execute("ALTER TABLE prediction_outputs ADD COLUMN overlay_path TEXT")
+        if "iou" not in columns:
+            conn.execute("ALTER TABLE prediction_outputs ADD COLUMN iou REAL")
+        if "status" not in columns:
+            conn.execute(
+                "ALTER TABLE prediction_outputs "
+                "ADD COLUMN status TEXT NOT NULL DEFAULT 'done'"
+            )
+        if "error_message" not in columns:
+            conn.execute("ALTER TABLE prediction_outputs ADD COLUMN error_message TEXT")
+
+    def _ensure_models_schema(self, conn):
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(models)").fetchall()
+        }
+        additions = {
+            "parameter_count": "INTEGER",
+            "db_import_test_mean_iou": "REAL",
+            "db_import_test_n_samples": "INTEGER",
+            "db_import_test_prediction_run_id": "INTEGER",
+            "db_import_test_updated_at": "TEXT",
+        }
+        for column, column_type in additions.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE models ADD COLUMN {column} {column_type}")
 
     def _ensure_training_runs_schema(self, conn):
         columns = {
@@ -689,7 +724,15 @@ class DBManager:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def insert_model(self, run_id, model_dir, best_model_path=None, snapshot_path=None, opt_path=None):
+    def insert_model(
+        self,
+        run_id,
+        model_dir,
+        best_model_path=None,
+        snapshot_path=None,
+        opt_path=None,
+        parameter_count=None,
+    ):
         model_dir = os.path.abspath(os.fspath(model_dir))
         best_model_path = os.fspath(best_model_path) if best_model_path else None
         snapshot_path = os.fspath(snapshot_path) if snapshot_path else None
@@ -698,12 +741,51 @@ class DBManager:
             cur = conn.execute(
                 """
                 INSERT INTO models
-                    (run_id, model_dir, best_model_path, snapshot_path, opt_path)
-                VALUES (?, ?, ?, ?, ?)
+                    (run_id, model_dir, best_model_path, snapshot_path, opt_path,
+                     parameter_count)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, model_dir, best_model_path, snapshot_path, opt_path),
+                (
+                    run_id,
+                    model_dir,
+                    best_model_path,
+                    snapshot_path,
+                    opt_path,
+                    parameter_count,
+                ),
             )
         return cur.lastrowid
+
+    def update_model_parameter_count(self, model_id, parameter_count):
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE models
+                SET parameter_count = ?
+                WHERE id = ?
+                """,
+                (int(parameter_count), model_id),
+            )
+
+    def update_model_db_import_metrics(
+        self,
+        model_id,
+        mean_iou,
+        n_samples,
+        prediction_run_id,
+    ):
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE models
+                SET db_import_test_mean_iou = ?,
+                    db_import_test_n_samples = ?,
+                    db_import_test_prediction_run_id = ?,
+                    db_import_test_updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (mean_iou, int(n_samples), prediction_run_id, model_id),
+            )
 
     def list_models(self):
         with self._connect() as conn:
@@ -756,9 +838,53 @@ class DBManager:
             ).fetchone()
         return self._dict(row)
 
+    def list_db_import_samples_for_model(self, model_id):
+        """Return active samples excluding the model run's train/val split samples."""
+        with self._connect() as conn:
+            model = conn.execute(
+                """
+                SELECT m.id AS model_id, r.split_id
+                FROM models m
+                JOIN training_runs r ON r.id = m.run_id
+                WHERE m.id = ?
+                """,
+                (model_id,),
+            ).fetchone()
+            if model is None:
+                return []
+            split_id = model["split_id"]
+            excluded_ids = set()
+            if split_id is not None:
+                excluded_ids = {
+                    row["sample_id"]
+                    for row in conn.execute(
+                        """
+                        SELECT sample_id
+                        FROM sample_splits
+                        WHERE split_id = ? AND split IN ('train', 'val')
+                        """,
+                        (split_id,),
+                    ).fetchall()
+                }
+            rows = conn.execute(
+                """
+                SELECT s.*, d.dataset_name, d.storage_layout
+                FROM samples s
+                JOIN datasets d ON d.id = s.dataset_id
+                WHERE s.status = 'active' AND d.status = 'done'
+                ORDER BY d.dataset_name ASC, s.sample_name ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows if row["id"] not in excluded_ids]
+
     def insert_prediction_run(self, model_id, input_path, output_dir, mode):
         input_path = os.fspath(input_path)
         output_dir = os.fspath(output_dir)
+        stored_input_path = (
+            input_path
+            if mode == "database" or input_path.startswith("db:")
+            else os.path.abspath(input_path)
+        )
         with self._connect() as conn:
             cur = conn.execute(
                 """
@@ -766,7 +892,7 @@ class DBManager:
                     (model_id, input_path, output_dir, mode, status)
                 VALUES (?, ?, ?, ?, 'running')
                 """,
-                (model_id, os.path.abspath(input_path), os.path.abspath(output_dir), mode),
+                (model_id, stored_input_path, os.path.abspath(output_dir), mode),
             )
         return cur.lastrowid
 
@@ -788,6 +914,9 @@ class DBManager:
         mask_path,
         compare_path,
         overlay_path=None,
+        iou=None,
+        status="done",
+        error_message=None,
     ):
         image_path = os.fspath(image_path)
         mask_path = os.fspath(mask_path)
@@ -797,14 +926,18 @@ class DBManager:
             conn.execute(
                 """
                 INSERT INTO prediction_outputs
-                    (prediction_run_id, image_path, mask_path, overlay_path, compare_path)
-                VALUES (?, ?, ?, ?, ?)
+                    (prediction_run_id, image_path, mask_path, overlay_path, compare_path,
+                     iou, status, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     prediction_run_id,
                     os.path.abspath(image_path),
-                    os.path.abspath(mask_path),
+                    os.path.abspath(mask_path) if mask_path else "",
                     os.path.abspath(overlay_path) if overlay_path else None,
-                    os.path.abspath(compare_path),
+                    os.path.abspath(compare_path) if compare_path else "",
+                    iou,
+                    status,
+                    error_message,
                 ),
             )

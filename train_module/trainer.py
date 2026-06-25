@@ -272,6 +272,7 @@ class Trainer:
                 best_model_path=best_model_path if os.path.exists(best_model_path) else None,
                 snapshot_path=snapshot_path if os.path.exists(snapshot_path) else None,
                 opt_path=opt_path if os.path.exists(opt_path) else None,
+                parameter_count=sum(param.numel() for param in core.model.parameters()),
             )
         except Exception:
             duration = time.perf_counter() - start_time
