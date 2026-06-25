@@ -36,6 +36,15 @@ class SegmentationBinaryDataset(Dataset):
         directory = os.path.expanduser(directory)
 
         instances = []
+        image_dir = os.path.join(directory, "image")
+        label_dir = os.path.join(directory, "ground_truth")
+        if os.path.isdir(image_dir) and os.path.isdir(label_dir):
+            for fname in sorted(os.listdir(image_dir)):
+                image_path = os.path.join(image_dir, fname)
+                label_path = os.path.join(label_dir, fname)
+                if os.path.isfile(image_path) and os.path.isfile(label_path):
+                    instances.append((image_path, label_path))
+
         for root, _, fnames in os.walk(directory):
             if all(file in fnames for file in self.file_mapping.values()):
                 paths = {

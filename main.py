@@ -1,5 +1,4 @@
 import logging
-import json
 import os
 import re
 import sys
@@ -117,6 +116,19 @@ def model_output_path(root_dir: str, run_name: str) -> str:
     date_text = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d")
     folder_name = f"run{{自動產生}}_{safe_folder_name(run_name)}_{date_text}"
     return os.path.join(root_dir, "model", folder_name)
+
+
+def format_parameter_count(value) -> str:
+    if value is None:
+        return "params ?"
+    count = int(value)
+    if count >= 1_000_000_000:
+        return f"{count / 1_000_000_000:.2f}B params"
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.2f}M params"
+    if count >= 1_000:
+        return f"{count / 1_000:.2f}K params"
+    return f"{count} params"
 
 
 def open_clean_dialog(parent, status_var):
@@ -290,10 +302,14 @@ def open_clean_dialog(parent, status_var):
 
 def dataset_options():
     from database import DBManager
+    from load_clean_module import STORAGE_LAYOUT_TYPED_FLAT
 
     db = DBManager()
     db.init_db()
-    datasets = db.list_datasets(only_done=True)
+    datasets = db.list_datasets(
+        only_done=True,
+        storage_layout=STORAGE_LAYOUT_TYPED_FLAT,
+    )
     labels = []
     mapping = {}
     counts = {}
@@ -318,9 +334,16 @@ def model_options():
     labels = []
     mapping = {}
     for model in models:
+        metric_text = "DB-test IoU ?"
+        if model.get("db_import_test_mean_iou") is not None:
+            metric_text = (
+                f"DB-test IoU {model['db_import_test_mean_iou']:.4f}"
+                f" / n={model.get('db_import_test_n_samples') or 0}"
+            )
         label = (
             f"#{model['id']} run#{model['run_id']} "
-            f"{model['run_name'] or ''} {model['encoder_name']}+{model['decoder_name']}"
+            f"{model['run_name'] or ''} {model['encoder_name']}+{model['decoder_name']} "
+            f"[{format_parameter_count(model.get('parameter_count'))}; {metric_text}]"
         )
         labels.append(label)
         mapping[label] = model["id"]
@@ -341,8 +364,8 @@ def open_train_dialog(parent, status_var):
     sample_summary_var = tk.StringVar(
         value=(
             "排除: 0 個；Train/Val pool 有效: 0 / 無效: 0；"
-            "Test 有效: 0 / 無效: 0\n"
-            "Test 比例: 0.0%；Validation 比例: 20.0%"
+            "Final Test 有效: 0 / 無效: 0\n"
+            "Final Test 比例: 0.0%；Validation 比例: 20.0%"
         )
     )
     field_defs = [
@@ -411,9 +434,9 @@ def open_train_dialog(parent, status_var):
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         return wrap, listbox
 
-    candidate_wrap, candidate_list = _build_dataset_listbox(dataset_frame, "可用資料集")
+    candidate_wrap, candidate_list = _build_dataset_listbox(dataset_frame, "Train/Val Pool")
     candidate_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-    test_wrap, dataset_list = _build_dataset_listbox(dataset_frame, "Test Dataset")
+    test_wrap, dataset_list = _build_dataset_listbox(dataset_frame, "Final Test Dataset")
     test_wrap.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
     candidate_actions = ttk.Frame(dataset_frame)
@@ -448,15 +471,15 @@ def open_train_dialog(parent, status_var):
         update_sample_summary()
 
     def selected_test_dataset_ids() -> list[int]:
-        """Return dataset ids selected as test datasets."""
+        """Return dataset ids selected as final test datasets."""
         return [d for d in visible_dataset_ids() if d in test_selected_ids]
 
     def selected_train_dataset_ids() -> list[int]:
-        """Return visible dataset ids that are not selected as test."""
+        """Return visible dataset ids that stay in the train/val pool."""
         return [d for d in visible_dataset_ids() if d not in test_selected_ids]
 
     def update_sample_summary(_event: tk.Event | None = None) -> None:
-        """Refresh sample counts for excluded, train/val pool and test dataset groups."""
+        """Refresh sample counts for excluded, train/val pool and final test groups."""
         train_ids = selected_train_dataset_ids()
         test_ids = selected_test_dataset_ids()
         train_pool_valid = sum(sample_counts[d]["active"] for d in train_ids)
@@ -472,8 +495,8 @@ def open_train_dialog(parent, status_var):
         sample_summary_var.set(
             f"排除: {len(excluded_ids)} 個；"
             f"Train/Val pool 有效: {train_pool_valid} / 無效: {train_pool_invalid}；"
-            f"Test 有效: {test_valid} / 無效: {test_invalid}\n"
-            f"Test 比例: {test_ratio:.1%}；Validation 比例: {val_ratio:.1%}"
+            f"Final Test 有效: {test_valid} / 無效: {test_invalid}\n"
+            f"Final Test 比例: {test_ratio:.1%}；Validation 比例: {val_ratio:.1%}"
         )
 
     def on_exclude() -> None:
@@ -481,7 +504,7 @@ def open_train_dialog(parent, status_var):
         picks = [visible[i] for i in candidate_list.curselection()]
         if not picks:
             messagebox.showwarning(
-                "排除", "請先在「可用資料集」中勾選要排除的項目", parent=dialog
+                "排除", "請先在「Train/Val Pool」中勾選要排除的項目", parent=dialog
             )
             return
         excluded_ids.update(picks)
@@ -511,10 +534,10 @@ def open_train_dialog(parent, status_var):
         width=3,
         command=lambda: messagebox.showinfo(
             "Dataset",
-            "左側「可用資料集」：勾選後按【排除選取】，項目會從兩邊清單消失；\n"
+            "左側「Train/Val Pool」：勾選後按【排除選取】，項目會從兩邊清單消失；\n"
             "按【復原全部】可把所有被排除的 dataset 拉回來。\n\n"
-            "右側「Test Dataset」：從可用資料集中勾選作為 final test（整包保留、不參與選模型）。\n"
-            "未排除且未選為 test 的 dataset 會作為 train/val pool，"
+            "右側「Final Test Dataset」：從 Train/Val Pool 中勾選作為 final test（整包保留、不參與選模型）。\n"
+            "未排除且未選為 final test 的 dataset 會作為 train/val pool，"
             "再依 Validation 比例切成 train 與 validation（每個 epoch 監看、挑最佳模型）。",
             parent=dialog,
         ),
@@ -623,7 +646,7 @@ def open_train_dialog(parent, status_var):
         test_dataset_ids = selected_test_dataset_ids()
         if not test_dataset_ids:
             messagebox.showwarning(
-                "模型訓練", "請先選擇至少一個 test dataset", parent=dialog
+                "模型訓練", "請先選擇至少一個 final test dataset", parent=dialog
             )
             return
         if not train_dataset_ids:
@@ -785,14 +808,15 @@ def open_train_dialog(parent, status_var):
 def open_predict_dialog(parent, status_var):
     dialog = tk.Toplevel(parent)
     dialog.title("模型預測")
-    dialog.geometry("980x760")
-    dialog.minsize(860, 640)
+    dialog.geometry("1120x760")
+    dialog.minsize(980, 640)
     dialog.transient(parent)
     dialog.grab_set()
 
     labels, mapping = model_options()
     model_var = tk.StringVar(value=labels[0] if labels else "")
     input_var = tk.StringVar()
+    input_mode_var = tk.StringVar(value="path")
     output_var = tk.StringVar()
     gpu_var = tk.StringVar(value="-1")
 
@@ -803,17 +827,32 @@ def open_predict_dialog(parent, status_var):
     ttk.Label(body, text="Model").grid(row=0, column=0, sticky="e", pady=4, padx=4)
     model_combo = ttk.Combobox(body, textvariable=model_var, values=labels, state="readonly", width=52)
     model_combo.grid(
-        row=0, column=1, columnspan=3, sticky="ew", pady=4
+        row=0, column=1, columnspan=4, sticky="ew", pady=4
     )
+    def choose_predict_file():
+        input_mode_var.set("path")
+        choose_file(input_var, [("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All", "*.*")])
+
+    def choose_predict_dir():
+        input_mode_var.set("path")
+        choose_dir(input_var)
+
+    def choose_database_import():
+        input_mode_var.set("database")
+        input_var.set("DB import: selected model")
+
     ttk.Label(body, text="Input").grid(row=1, column=0, sticky="e", pady=4, padx=4)
     ttk.Entry(body, textvariable=input_var, width=46).grid(row=1, column=1, sticky="w")
     ttk.Button(
         body,
         text="檔案",
-        command=lambda: choose_file(input_var, [("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All", "*.*")]),
+        command=choose_predict_file,
     ).grid(row=1, column=2, padx=3)
-    ttk.Button(body, text="資料夾", command=lambda: choose_dir(input_var)).grid(
+    ttk.Button(body, text="資料夾", command=choose_predict_dir).grid(
         row=1, column=3, padx=3
+    )
+    ttk.Button(body, text="資料庫匯入", command=choose_database_import).grid(
+        row=1, column=4, padx=3
     )
     ttk.Label(body, text="Output").grid(row=2, column=0, sticky="e", pady=4, padx=4)
     ttk.Entry(body, textvariable=output_var, width=46).grid(row=2, column=1, sticky="w")
@@ -826,7 +865,7 @@ def open_predict_dialog(parent, status_var):
         ttk.Label(body, text="尚無模型，請先執行模型訓練").grid(row=5, column=1, sticky="w")
 
     metrics_frame = ttk.LabelFrame(body, text="Training Metrics", padding=8)
-    metrics_frame.grid(row=4, column=0, columnspan=4, sticky="nsew", pady=(10, 0))
+    metrics_frame.grid(row=4, column=0, columnspan=5, sticky="nsew", pady=(10, 0))
     metrics_frame.rowconfigure(0, weight=1)
     metrics_frame.columnconfigure(0, weight=1)
     metric_status_var = tk.StringVar(value="")
@@ -885,10 +924,27 @@ def open_predict_dialog(parent, status_var):
             metric_status_var.set("")
             metric_canvas.draw_idle()
             return
+        if model.get("parameter_count") is None:
+            try:
+                from predict_module.predictor import compute_parameter_count_for_model
+
+                parameter_count = compute_parameter_count_for_model(model, gpu_id=-1)
+                db.update_model_parameter_count(model_id, parameter_count)
+                model["parameter_count"] = parameter_count
+            except Exception as exc:
+                logger.warning("計算 model 參數量失敗：%s", exc)
+        model_info = format_parameter_count(model.get("parameter_count"))
+        if model.get("db_import_test_mean_iou") is not None:
+            model_info += (
+                f"，DB-test mean IoU={model['db_import_test_mean_iou']:.4f}"
+                f" (n={model.get('db_import_test_n_samples') or 0})"
+            )
         epoch_rows = db.list_epoch_metrics(model["run_id"])
         if not epoch_rows:
             init_metric_axes("No epoch metrics")
-            metric_status_var.set(f"model#{model_id} / run#{model['run_id']} 沒有 epoch metrics 紀錄")
+            metric_status_var.set(
+                f"model#{model_id} / run#{model['run_id']}，{model_info}，沒有 epoch metrics 紀錄"
+            )
             metric_canvas.draw_idle()
             return
 
@@ -904,7 +960,9 @@ def open_predict_dialog(parent, status_var):
         val_ious = [row["val_iou"] for row in epoch_rows if row["val_iou"] is not None]
         best_val_iou = max(val_ious) if val_ious else None
         suffix = f"，best validation IoU={best_val_iou:.4f}" if best_val_iou is not None else ""
-        metric_status_var.set(f"model#{model_id} / run#{model['run_id']}，epochs={len(epoch_rows)}{suffix}")
+        metric_status_var.set(
+            f"model#{model_id} / run#{model['run_id']}，{model_info}，epochs={len(epoch_rows)}{suffix}"
+        )
         metric_canvas.draw_idle()
 
     model_combo.bind("<<ComboboxSelected>>", refresh_model_metrics)
@@ -915,20 +973,39 @@ def open_predict_dialog(parent, status_var):
         if model_id is None:
             messagebox.showwarning("模型預測", "請先選擇 model", parent=dialog)
             return
-        if not input_var.get().strip():
+        input_mode = input_mode_var.get()
+        if input_mode != "database" and not input_var.get().strip():
             messagebox.showwarning("模型預測", "請先選擇 input", parent=dialog)
             return
 
         def task():
             from predict_module import Predictor
 
+            input_path = None if input_mode == "database" else input_var.get().strip()
+            output_dir = output_var.get().strip() or None
+            gpu_id = int(gpu_var.get())
             result = Predictor(
                 model_id=model_id,
-                input_path=input_var.get().strip(),
-                output_dir=output_var.get().strip() or None,
-                gpu_id=int(gpu_var.get()),
+                input_path=input_path,
+                output_dir=output_dir,
+                gpu_id=gpu_id,
+                input_mode=input_mode,
             ).run()
-            return f"輸出位置：{result['output_dir']}"
+            ious = [
+                output["iou"]
+                for output in result["outputs"]
+                if output.get("status") == "done" and output.get("iou") is not None
+            ]
+            failed_count = sum(1 for output in result["outputs"] if output.get("status") == "failed")
+            metric_text = ""
+            if ious:
+                metric_text = f"\nDB-test mean IoU: {sum(ious) / len(ious):.4f} (n={len(ious)})"
+            if failed_count:
+                metric_text += f"\n略過失敗樣本：{failed_count}"
+            summary_text = ""
+            if result.get("summary_path"):
+                summary_text = f"\nExcel 總表：{result['summary_path']}"
+            return f"輸出位置：{result['output_dir']}{summary_text}{metric_text}"
 
         run_background(status_var, "模型預測", task)
         dialog.destroy()

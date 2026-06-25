@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 
 import cv2
-import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 import numpy as np
 import PIL.Image as Image
 import segmentation_models_pytorch as smp
@@ -117,16 +118,16 @@ class Predictor:
         scale = measure.get("um_per_px")
         if scale:
             return (
-                f"area: {measure['area_px']:.0f} px² = {measure['area_um2']:.2f} µm²\n"
-                f"H feret: {measure['h_feret_px']:.0f} px = {measure['h_feret_um']:.2f} µm\n"
-                f"V feret: {measure['v_feret_px']:.0f} px = {measure['v_feret_um']:.2f} µm\n"
-                f"(scale {scale:g} µm/px)"
+                f"area: {measure['area_px']:.0f} px^2 = {measure['area_um2']:.2f} um^2\n"
+                f"H feret: {measure['h_feret_px']:.0f} px = {measure['h_feret_um']:.2f} um\n"
+                f"V feret: {measure['v_feret_px']:.0f} px = {measure['v_feret_um']:.2f} um\n"
+                f"(scale {scale:g} um/px)"
             )
         return (
-            f"area: {measure['area_px']:.0f} px²\n"
+            f"area: {measure['area_px']:.0f} px^2\n"
             f"H feret: {measure['h_feret_px']:.0f} px\n"
             f"V feret: {measure['v_feret_px']:.0f} px\n"
-            f"(pixel only — µm scale not set)"
+            f"(pixel only - um scale not set)"
         )
 
     def _save_mask(self, mask_np: np.ndarray, stem: str) -> str:
@@ -135,7 +136,9 @@ class Predictor:
         return out_path
 
     def _save_compare(self, original_pil: Image.Image, mask_np: np.ndarray, stem: str, measure: dict | None = None) -> str:
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5.6))
+        fig = Figure(figsize=(10, 5.6))
+        canvas = FigureCanvasAgg(fig)
+        axes = fig.subplots(1, 2)
 
         axes[0].imshow(original_pil)
         axes[0].set_title("Original Image")
@@ -159,8 +162,8 @@ class Predictor:
         fig.tight_layout()
 
         out_path = os.path.join(self.output_dir, f"{stem}_compare.png")
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        canvas.print_figure(out_path, dpi=150, bbox_inches="tight")
+        fig.clear()
         return out_path
 
     def _save_overlay(self, original_pil: Image.Image, mask_np: np.ndarray, stem: str) -> str:
